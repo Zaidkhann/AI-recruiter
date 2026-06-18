@@ -212,5 +212,20 @@ class QdrantManager:
         
         return self._local_index.search(query_vector, limit=limit)
 
+    def clear_all_candidates(self, vector_size: int = 768):
+        """Remove every candidate embedding from Qdrant and the local fallback index."""
+        self._local_index = LocalVectorIndex()
+        if self._use_fallback:
+            return
+        try:
+            collections = self.client.get_collections().collections
+            if any(c.name == self.collection_name for c in collections):
+                self.client.delete_collection(self.collection_name)
+            self.init_collection(vector_size=vector_size)
+        except Exception as e:
+            logger.error(f"Failed to clear Qdrant collection: {e}. Using local fallback index only.")
+            self._use_fallback = True
+            vector_status["status"] = "fallback"
+
 qdrant_manager = QdrantManager()
 

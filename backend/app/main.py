@@ -2,7 +2,7 @@ import logging
 from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from app.db.database import Base, engine, db_status, SessionLocal
+from app.db.database import Base, engine, db_status, SessionLocal, migrate_candidate_email_non_unique
 from app.db.qdrant_client import qdrant_manager, vector_status
 from app.db.redis_client import redis_manager, cache_status
 from app.services.llm_service import llm_status
@@ -47,6 +47,7 @@ def startup_event():
     
     # Initialize SQL Database Tables
     Base.metadata.create_all(bind=engine)
+    migrate_candidate_email_non_unique(engine)
     logger.info("Database tables initialized.")
 
     # 1. Trigger pings to check actual external status and set status dicts

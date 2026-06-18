@@ -14,6 +14,8 @@ class RankQuery(BaseModel):
     job_id: int
     weights: dict[str, float] = Field(default=None)  # Optional custom slider weights
     benchmark_profile: str = Field(default=None)  # Optional benchmark overlay override
+    semantic_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    overall_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
 
     @field_validator("weights")
     @classmethod
@@ -50,7 +52,13 @@ def rank_candidates(
         original_benchmark = job.benchmark_profile
         job.benchmark_profile = payload.benchmark_profile
 
-    ranked_candidates = ranking_engine.rank_candidates(db, payload.job_id, payload.weights)
+    ranked_result = ranking_engine.rank_candidates(
+        db,
+        payload.job_id,
+        payload.weights,
+        semantic_threshold=payload.semantic_threshold,
+        overall_threshold=payload.overall_threshold,
+    )
 
     # Roll back any in-memory override to avoid accidental persistence
     if payload.benchmark_profile and payload.benchmark_profile != "DEFAULT":
@@ -68,7 +76,7 @@ def rank_candidates(
             details={"job_id": payload.job_id, "weights": payload.weights, "benchmark_profile": payload.benchmark_profile}
         )
 
-    return ranked_candidates
+    return ranked_result
 
 @router.get("/{job_id}/candidate/{candidate_id}/decision")
 def get_candidate_decision(

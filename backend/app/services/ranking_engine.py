@@ -168,8 +168,9 @@ class RankingEngine:
             return {"error": "Job not found"}
         
         ranked_all = self.rank_candidates(db, job_id)
-        cand_a_data = next((c for c in ranked_all if c["id"] == candidate_a_id), None)
-        cand_b_data = next((c for c in ranked_all if c["id"] == candidate_b_id), None)
+        all_candidates = self._flatten_ranking_result(ranked_all)
+        cand_a_data = next((c for c in all_candidates if c["id"] == candidate_a_id), None)
+        cand_b_data = next((c for c in all_candidates if c["id"] == candidate_b_id), None)
 
         if not cand_a_data or not cand_b_data:
             return {"error": "One or both candidates not found or could not be ranked"}
@@ -394,13 +395,83 @@ class RankingEngine:
 
         return min(1.0, max(0.0, score / len(hidden_reqs)))
 
-    def rank_candidates(self, db: Session, job_id: int, weights: dict = None) -> list:
+    def _get_missing_required_skills(self, candidate_skills: list, required_skills: list) -> list:
+        if not required_skills:
+            return []
+        c_set = {s.lower() for s in (candidate_skills or [])}
+        return [skill for skill in required_skills if skill.lower() not in c_set]
+
+    def _build_resume_preview(self, resume_text: str | None, max_len: int = 220) -> str:
+        text = (resume_text or "").strip()
+        if not text:
+            return "No resume text available."
+        normalized = " ".join(text.split())
+        if len(normalized) <= max_len:
+            return normalized
+        return normalized[:max_len].rstrip() + "..."
+
+    def _evaluate_disqualification(
+        self,
+        *,
+        direct_match_ratio: float,
+        semantic_score: float,
+        transferable_val: float,
+        adjacent_only_score: float,
+        final_score: float,
+        semantic_threshold: float,
+        overall_threshold: float,
+    ) -> tuple[bool, list[str]]:
+        checks = {
+            "No matching required skills": direct_match_ratio == 0,
+            "Semantic fit below threshold": semantic_score < semantic_threshold,
+            "No transferable skills detected": transferable_val <= 0,
+            "No adjacent skills from knowledge graph": adjacent_only_score <= 0,
+            "Overall ranking score below threshold": final_score < overall_threshold,
+        }
+        skill_failures = all(checks[k] for k in checks if k != "Overall ranking score below threshold")
+        is_disqualified = skill_failures and final_score < overall_threshold
+        reasons = [label for label, failed in checks.items() if failed] if is_disqualified else []
+        return is_disqualified, reasons
+
+    def _flatten_ranking_result(self, result: dict | list) -> list:
+        if isinstance(result, dict):
+            return result.get("ranked", []) + result.get("disqualified", [])
+        return result or []
+
+    def rank_candidates(
+        self,
+        db: Session,
+        job_id: int,
+        weights: dict = None,
+        semantic_threshold: float | None = None,
+        overall_threshold: float | None = None,
+    ) -> dict:
         """
         Executes the full retrieval and ranking pipeline.
+        Returns ranked and disqualified candidate buckets with analytics metadata.
         """
+        semantic_threshold = (
+            semantic_threshold
+            if semantic_threshold is not None
+            else settings.DISQUALIFY_SEMANTIC_THRESHOLD
+        )
+        overall_threshold = (
+            overall_threshold
+            if overall_threshold is not None
+            else settings.DISQUALIFY_OVERALL_THRESHOLD
+        )
+
         job = db.query(Job).filter(Job.id == job_id).first()
         if not job:
-            return []
+            return {
+                "ranked": [],
+                "disqualified": [],
+                "analytics": {"total_processed": 0, "ranked_count": 0, "disqualified_count": 0},
+                "thresholds": {
+                    "semantic_threshold": semantic_threshold,
+                    "overall_threshold": overall_threshold,
+                },
+            }
 
         default_weights = {
             "semantic": 0.5,
@@ -464,7 +535,9 @@ class RankingEngine:
                 db_updates_needed = True
 
             c_skills = candidate.skills or []
-            
+
+            direct_match_ratio = skill_adjacency_engine.calculate_direct_match_ratio(c_skills, j_skills)
+            adjacent_only_score = skill_adjacency_engine.calculate_adjacent_only_match(db, c_skills, j_skills)
             adjacency_score = skill_adjacency_engine.calculate_match(db, c_skills, j_skills)
             target_level = job.graph_schema.get("experience_level", "SENIOR") if job.graph_schema else "SENIOR"
             trajectory_metrics = career_trajectory_engine.calculate_score(candidate.career_history or [], target_level)
@@ -560,6 +633,16 @@ class RankingEngine:
             }
 
             confidence_score = self._calculate_confidence_score(candidate)
+            missing_required_skills = self._get_missing_required_skills(c_skills, j_skills)
+            is_disqualified, disqualify_reasons = self._evaluate_disqualification(
+                direct_match_ratio=direct_match_ratio,
+                semantic_score=sem_score,
+                transferable_val=transferable_val,
+                adjacent_only_score=adjacent_only_score,
+                final_score=final_score,
+                semantic_threshold=semantic_threshold,
+                overall_threshold=overall_threshold,
+            )
 
             scored_candidates.append({
                 "candidate": candidate,
@@ -576,7 +659,9 @@ class RankingEngine:
                     "domain_alignment": round(domain_alignment_score, 2),
                     "requirement_compliance": round(requirement_compliance_score, 2),
                     "leadership_match": round(leadership_match_score, 2),
-                    "hidden_fit": round(hidden_fit_score, 2)
+                    "hidden_fit": round(hidden_fit_score, 2),
+                    "direct_skill_match": round(direct_match_ratio, 2),
+                    "adjacent_skill_match": round(adjacent_only_score, 2),
                 },
                 "trajectory_details": trajectory_metrics,
                 "behavioral_details": behavioral_metrics,
@@ -584,23 +669,31 @@ class RankingEngine:
                 "market_details": {
                     "learning_velocity": learning_velocity,
                     "market_score": market_score
-                }
+                },
+                "missing_required_skills": missing_required_skills,
+                "resume_preview": self._build_resume_preview(candidate.resume_text),
+                "status": "disqualified" if is_disqualified else "ranked",
+                "reason": disqualify_reasons,
+                "direct_match_ratio": direct_match_ratio,
+                "semantic_score_raw": round(sem_score, 3),
             })
 
         scored_candidates.sort(key=lambda x: x["final_score"], reverse=True)
 
         ranked_output = []
+        disqualified_output = []
         for rank_idx, item in enumerate(scored_candidates):
             c = item["candidate"]
-            
+            is_disqualified = item["status"] == "disqualified"
+
             # Compute benchmark match and percentiles
             benchmark_res = benchmarking_engine.compute_percentiles(item["factors"])
-            
+
             # Update latest benchmark data on candidate
             c.benchmark_data = benchmark_res
             db.add(c)
             db_updates_needed = True
-            
+
             # Compute ranking audit trail
             audit_res = ranking_audit_engine.generate_audit(
                 factors=item["factors"],
@@ -609,7 +702,7 @@ class RankingEngine:
                 raw_score=item["raw_score"],
                 final_score=item["final_score"]
             )
-            
+
             candidate_brief = {
                 "id": c.id,
                 "name": c.name,
@@ -621,14 +714,15 @@ class RankingEngine:
 
             explanation = self._get_cached_explanation(c.id, job_id)
             if not explanation:
-                if rank_idx < 10:
+                ranked_position = len(ranked_output)
+                if not is_disqualified and ranked_position < 10:
                     explanation = self._generate_llm_explanation(candidate_brief, job_context)
                 else:
                     explanation = self._generate_rule_based_explanation(candidate_brief, j_skills)
                 self._set_cached_explanation(c.id, job_id, explanation)
 
-            ranked_output.append({
-                "rank": rank_idx + 1,
+            candidate_payload = {
+                "rank": None if is_disqualified else len(ranked_output) + 1,
                 "id": c.id,
                 "name": c.name,
                 "email": c.email,
@@ -647,7 +741,7 @@ class RankingEngine:
                 "behavioral_details": item["behavioral_details"],
                 "success_details": item["success_details"],
                 "market_details": item["market_details"],
-                "is_llm_verified": rank_idx < 10,
+                "is_llm_verified": (not is_disqualified) and len(ranked_output) < 10,
                 "phone": c.phone,
                 "location": c.location,
                 "education": c.education or [],
@@ -659,8 +753,21 @@ class RankingEngine:
                 "behavioral_profile": c.behavioral_profile,
                 "linkedin_intelligence": c.linkedin_intelligence,
                 "benchmark_data": benchmark_res,
-                "ranking_audit": audit_res
-            })
+                "ranking_audit": audit_res,
+                "missing_required_skills": item["missing_required_skills"],
+                "resume_preview": item["resume_preview"],
+                "direct_match_ratio": round(item["direct_match_ratio"], 3),
+                "semantic_score_raw": item["semantic_score_raw"],
+            }
+
+            if is_disqualified:
+                candidate_payload["status"] = "disqualified"
+                candidate_payload["reason"] = item["reason"]
+                disqualified_output.append(candidate_payload)
+            else:
+                candidate_payload["status"] = "ranked"
+                candidate_payload["reason"] = []
+                ranked_output.append(candidate_payload)
 
         if db_updates_needed:
             try:
@@ -669,6 +776,19 @@ class RankingEngine:
                 logger.error(f"Failed to commit updated candidate intelligence data: {e}")
                 db.rollback()
 
-        return ranked_output
+        total_processed = len(ranked_output) + len(disqualified_output)
+        return {
+            "ranked": ranked_output,
+            "disqualified": disqualified_output,
+            "analytics": {
+                "total_processed": total_processed,
+                "ranked_count": len(ranked_output),
+                "disqualified_count": len(disqualified_output),
+            },
+            "thresholds": {
+                "semantic_threshold": semantic_threshold,
+                "overall_threshold": overall_threshold,
+            },
+        }
 
 ranking_engine = RankingEngine()

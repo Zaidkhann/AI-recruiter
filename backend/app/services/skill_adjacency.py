@@ -100,4 +100,58 @@ class SkillAdjacencyEngine:
         # Average match score
         return total_score / len(required_skills)
 
+    def calculate_direct_match_ratio(self, candidate_skills: list, required_skills: list) -> float:
+        """Fraction of required skills with an exact match in the candidate profile."""
+        if not required_skills:
+            return 1.0
+        if not candidate_skills:
+            return 0.0
+        c_set = {s.lower() for s in candidate_skills}
+        j_set = {s.lower() for s in required_skills}
+        return len(c_set.intersection(j_set)) / len(j_set)
+
+    def calculate_adjacent_only_match(self, db: Session, candidate_skills: list, required_skills: list) -> float:
+        """
+        Adjacency score counting only graph/fallback relationships — excludes exact skill matches.
+        Used to detect transferable/adjacent talent without direct overlap.
+        """
+        if not required_skills or not candidate_skills:
+            return 0.0
+
+        G = self.build_graph(db)
+        name_to_id = {data["name"]: nid for nid, data in G.nodes(data=True)}
+
+        total_score = 0.0
+        for req_skill in required_skills:
+            req_skill_lower = req_skill.lower()
+            best_individual_score = 0.0
+
+            for cand_skill in candidate_skills:
+                cand_skill_lower = cand_skill.lower()
+                if req_skill_lower == cand_skill_lower:
+                    continue
+
+                fallback_pair = (req_skill_lower, cand_skill_lower)
+                fallback_pair_rev = (cand_skill_lower, req_skill_lower)
+                if fallback_pair in self.fallbacks:
+                    best_individual_score = max(best_individual_score, self.fallbacks[fallback_pair])
+                    continue
+                if fallback_pair_rev in self.fallbacks:
+                    best_individual_score = max(best_individual_score, self.fallbacks[fallback_pair_rev])
+                    continue
+
+                req_id = name_to_id.get(req_skill_lower)
+                cand_id = name_to_id.get(cand_skill_lower)
+                if req_id and cand_id:
+                    try:
+                        path_len = nx.shortest_path_length(G, source=req_id, target=cand_id, weight="weight")
+                        score = 1.0 / (1.0 + 0.5 * path_len)
+                        best_individual_score = max(best_individual_score, score)
+                    except nx.NetworkXNoPath:
+                        pass
+
+            total_score += best_individual_score
+
+        return total_score / len(required_skills)
+
 skill_adjacency_engine = SkillAdjacencyEngine()

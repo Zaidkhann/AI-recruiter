@@ -58,8 +58,9 @@ def get_candidate_benchmark(
         raise HTTPException(status_code=404, detail="Candidate or Job not found")
         
     from app.services.ranking_engine import ranking_engine
-    ranked = ranking_engine.rank_candidates(db, job_id)
-    match = next((item for item in ranked if item["id"] == candidate_id), None)
+    ranked_result = ranking_engine.rank_candidates(db, job_id)
+    all_candidates = ranking_engine._flatten_ranking_result(ranked_result)
+    match = next((item for item in all_candidates if item["id"] == candidate_id), None)
     if not match:
         raise HTTPException(status_code=404, detail="Candidate cannot be ranked for this job")
         
@@ -73,8 +74,9 @@ def get_ranking_audit(
     _current_user: User = Depends(require_role("viewer"))
 ):
     from app.services.ranking_engine import ranking_engine
-    ranked = ranking_engine.rank_candidates(db, job_id)
-    match = next((item for item in ranked if item["id"] == candidate_id), None)
+    ranked_result = ranking_engine.rank_candidates(db, job_id)
+    all_candidates = ranking_engine._flatten_ranking_result(ranked_result)
+    match = next((item for item in all_candidates if item["id"] == candidate_id), None)
     if not match:
         raise HTTPException(status_code=404, detail="Candidate cannot be ranked for this job")
         
