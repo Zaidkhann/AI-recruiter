@@ -19,7 +19,7 @@ export interface Job {
 }
 
 export interface Candidate {
-  rank: number;
+  rank: number | null;
   id: number;
   name: string;
   email: string;
@@ -34,6 +34,12 @@ export interface Candidate {
   success_details: SuccessDetails;
   market_details: MarketDetails;
   is_llm_verified: boolean;
+  status?: CandidateStatus;
+  reason?: string[];
+  missing_required_skills?: string[];
+  resume_preview?: string;
+  direct_match_ratio?: number;
+  semantic_score_raw?: number;
   phone?: string;
   location?: string;
   education?: Education[];
@@ -67,6 +73,28 @@ export interface RankingModifiers {
   team_gap_score: number;
   transferable_skills: number;
   benchmark_compatibility: number;
+  direct_skill_match?: number;
+  adjacent_skill_match?: number;
+}
+
+export type CandidateStatus = "ranked" | "disqualified" | "overridden";
+
+export interface RankingAnalytics {
+  total_processed: number;
+  ranked_count: number;
+  disqualified_count: number;
+}
+
+export interface RankingThresholds {
+  semantic_threshold: number;
+  overall_threshold: number;
+}
+
+export interface RankResponse {
+  ranked: Candidate[];
+  disqualified: Candidate[];
+  analytics: RankingAnalytics;
+  thresholds: RankingThresholds;
 }
 
 export interface TrajectoryDetails {

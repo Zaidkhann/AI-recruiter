@@ -1,7 +1,10 @@
 import time
 import asyncio
+import re
+import uuid
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
+from sqlalchemy.exc import IntegrityError
 from app.services.pipeline_events import pipeline_events_service
 from app.services.linkedin_intelligence import linkedin_intelligence_engine
 from sqlalchemy.orm import Session
@@ -17,12 +20,92 @@ from app.core.prompt_protection import enforce_prompt_protection
 
 router = APIRouter(prefix="/api/candidates", tags=["Candidates"])
 
+
+def _resolve_candidate_email(parsed: dict, resume_text: str, filename: str) -> str:
+    """Always return a usable email — never block ingestion when parsing misses one."""
+    email = (parsed.get("email") or "").strip()
+    if email:
+        return email
+    email_match = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", resume_text or "")
+    if email_match:
+        return email_match.group(0)
+    stem = filename.rsplit(".", 1)[0] if filename and "." in filename else "resume"
+    safe_stem = re.sub(r"[^\w.-]", "-", stem).strip("-")[:40] or "candidate"
+    return f"{safe_stem}.{uuid.uuid4().hex[:8]}@ingest.local"
+
+
+def _populate_candidate_fields(
+    cand: Candidate,
+    *,
+    name: str,
+    email: str,
+    resume_text: str,
+    parsed: dict,
+    skills: list,
+    github_username: str | None,
+    github_stats: dict,
+    behavioral_profile: dict,
+    linkedin_intel: dict,
+    phone: str | None,
+    location: str | None,
+) -> None:
+    cand.name = name
+    cand.email = email
+    cand.resume_text = resume_text
+    cand.skills = skills
+    cand.github_username = github_username
+    cand.github_stats = github_stats
+    cand.career_history = parsed.get("career_history", [])
+    cand.certifications = parsed.get("certifications", [])
+    cand.phone = phone
+    cand.location = location
+    cand.education = parsed.get("education", [])
+    cand.github_url = parsed.get("github_url")
+    cand.linkedin_url = parsed.get("linkedin_url")
+    cand.portfolio_url = parsed.get("portfolio_url")
+    cand.personal_website = parsed.get("personal_website")
+    cand.twitter_x = parsed.get("twitter_x")
+    cand.behavioral_profile = behavioral_profile
+    cand.linkedin_intelligence = linkedin_intel
+    cand.ranking_explanations = None
+    cand.benchmark_data = None
+
 @router.get("")
 def get_candidates(
     db: Session = Depends(get_db),
     _current_user: User = Depends(require_role("viewer"))
 ):
     return db.query(Candidate).all()
+
+
+@router.delete("/flush")
+def flush_all_candidates(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("recruiter")),
+):
+    """Delete all candidate resumes from the database and vector store."""
+    client_ip = request.client.host if request.client else "unknown"
+    deleted_count = db.query(Candidate).count()
+    db.query(Candidate).delete()
+    db.commit()
+    qdrant_manager.clear_all_candidates()
+
+    log_audit_event(
+        db=db,
+        action="CANDIDATES_FLUSH",
+        username=current_user.username,
+        user_id=current_user.id,
+        ip_address=client_ip,
+        details={"deleted_count": deleted_count},
+    )
+
+    return {
+        "status": "success",
+        "deleted_count": deleted_count,
+        "message": f"Removed {deleted_count} resume{'s' if deleted_count != 1 else ''} from the database.",
+    }
+
 
 @router.get("/{candidate_id}")
 def get_candidate(
@@ -78,21 +161,16 @@ async def upload_candidate(
     content_type = file.content_type or ""
 
     allowed_extensions = {"pdf", "docx", "txt"}
-    allowed_content_types = {
-        "application/pdf",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "text/plain"
-    }
 
-    # 2. Validate file extension and MIME type
-    if extension not in allowed_extensions or content_type not in allowed_content_types:
+    # Validate by extension only — browsers often send application/octet-stream for PDFs
+    if extension not in allowed_extensions:
         log_audit_event(
             db=db,
             action="CANDIDATE_UPLOAD_FAILED",
             username=current_user.username,
             user_id=current_user.id,
             ip_address=client_ip,
-            details={"filename": filename, "extension": extension, "content_type": content_type, "reason": "Invalid file type extension or content-type"}
+            details={"filename": filename, "extension": extension, "content_type": content_type, "reason": "Invalid file extension"}
         )
         if session_id:
             pipeline_events_service.emit_stage(session_id, "resume_uploaded", status="error", details={"reason": "Invalid file type"})
@@ -198,18 +276,7 @@ async def upload_candidate(
         )
         pipeline_events_service.emit_stage(session_id, "skill_extraction", status="processing")
 
-    email = parsed.get("email")
-    if not email:
-        if session_id:
-            pipeline_events_service.emit_stage(session_id, "ai_parsing", status="error", details={"reason": "Could not parse candidate email"})
-        raise HTTPException(status_code=400, detail="Could not parse candidate email from resume.")
-
-    # Check if candidate exists
-    existing = db.query(Candidate).filter(Candidate.email == email).first()
-    if existing:
-         if session_id:
-             pipeline_events_service.emit_stage(session_id, "resume_uploaded", status="error", details={"reason": "Candidate already exists"})
-         raise HTTPException(status_code=400, detail=f"Candidate with email {email} already exists")
+    email = _resolve_candidate_email(parsed, text, filename)
 
     skills = parsed.get("skills", [])
     if session_id:
@@ -289,29 +356,50 @@ async def upload_candidate(
     phone_cleaned = parsed.get("phone", "").replace("<", "&lt;").replace(">", "&gt;").strip() if parsed.get("phone") else None
     loc_cleaned = parsed.get("location", "").replace("<", "&lt;").replace(">", "&gt;").strip() if parsed.get("location") else None
 
-    # Create DB entry
-    cand = Candidate(
+    # Update existing candidate when email already in DB, otherwise create new
+    existing = db.query(Candidate).filter(Candidate.email == email_cleaned).order_by(Candidate.id.desc()).first()
+    is_update = existing is not None
+    cand = existing if is_update else Candidate()
+    _populate_candidate_fields(
+        cand,
         name=name_cleaned,
         email=email_cleaned,
         resume_text=text,
+        parsed=parsed,
         skills=skills,
         github_username=github_username,
         github_stats=github_stats,
-        career_history=parsed.get("career_history", []),
-        certifications=parsed.get("certifications", []),
+        behavioral_profile=behavioral_profile,
+        linkedin_intel=linkedin_intel,
         phone=phone_cleaned,
         location=loc_cleaned,
-        education=parsed.get("education", []),
-        github_url=parsed.get("github_url"),
-        linkedin_url=parsed.get("linkedin_url"),
-        portfolio_url=parsed.get("portfolio_url"),
-        personal_website=parsed.get("personal_website"),
-        twitter_x=parsed.get("twitter_x"),
-        behavioral_profile=behavioral_profile,
-        linkedin_intelligence=linkedin_intel
     )
-    db.add(cand)
-    db.flush()
+    if not is_update:
+        db.add(cand)
+
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        existing = db.query(Candidate).filter(Candidate.email == email_cleaned).order_by(Candidate.id.desc()).first()
+        if not existing:
+            raise HTTPException(status_code=500, detail="Could not save candidate profile.")
+        cand = existing
+        _populate_candidate_fields(
+            cand,
+            name=name_cleaned,
+            email=email_cleaned,
+            resume_text=text,
+            parsed=parsed,
+            skills=skills,
+            github_username=github_username,
+            github_stats=github_stats,
+            behavioral_profile=behavioral_profile,
+            linkedin_intel=linkedin_intel,
+            phone=phone_cleaned,
+            location=loc_cleaned,
+        )
+        db.flush()
 
     if session_id:
         pipeline_events_service.emit_stage(session_id, "embedding_generation", status="processing")
@@ -356,7 +444,7 @@ async def upload_candidate(
         username=current_user.username,
         user_id=current_user.id,
         ip_address=client_ip,
-        details={"candidate_id": cand.id, "candidate_name": cand.name, "filename": filename}
+        details={"candidate_id": cand.id, "candidate_name": cand.name, "filename": filename, "updated": is_update}
     )
 
     return cand
@@ -389,19 +477,21 @@ async def upload_candidates_batch(
                 "status": "success",
                 "candidate_id": cand.id,
                 "name": cand.name,
-                "email": cand.email
+                "email": cand.email,
             })
         except HTTPException as e:
+            db.rollback()
             results.append({
                 "filename": file.filename,
                 "status": "error",
-                "detail": e.detail
+                "detail": e.detail if isinstance(e.detail, str) else str(e.detail),
             })
         except Exception as e:
+            db.rollback()
             results.append({
                 "filename": file.filename,
                 "status": "error",
-                "detail": str(e)
+                "detail": str(e)[:200],
             })
     
     success_count = sum(1 for r in results if r["status"] == "success")

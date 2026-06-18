@@ -58,3 +58,29 @@ def get_db():
     finally:
         db.close()
 
+
+def migrate_candidate_email_non_unique(engine_instance):
+    """
+    Drop legacy unique constraint on candidates.email so re-uploads are allowed.
+    Safe to run on every startup (no-ops when already migrated).
+    """
+    try:
+        with engine_instance.begin() as conn:
+            dialect = engine_instance.dialect.name
+            if dialect == "postgresql":
+                conn.execute(text("ALTER TABLE candidates DROP CONSTRAINT IF EXISTS candidates_email_key"))
+                conn.execute(text("DROP INDEX IF EXISTS ix_candidates_email"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_candidates_email ON candidates (email)"))
+            elif dialect == "sqlite":
+                table_sql = conn.execute(
+                    text("SELECT sql FROM sqlite_master WHERE type='table' AND name='candidates'")
+                ).scalar()
+                if table_sql and "UNIQUE" in table_sql.upper() and "email" in table_sql.lower():
+                    logger.warning(
+                        "SQLite candidates table still has email UNIQUE. "
+                        "Use Admin 'Reset & Seed Data' once to rebuild schema, or delete recruiter.db."
+                    )
+        logger.info("Candidate email uniqueness migration complete.")
+    except Exception as e:
+        logger.warning(f"Candidate email uniqueness migration skipped: {e}")
+

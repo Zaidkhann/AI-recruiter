@@ -19,7 +19,7 @@ class Candidate(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False, index=True)
-    email = Column(String, nullable=False, unique=True, index=True)
+    email = Column(String, nullable=False, index=True)
     resume_text = Column(Text, nullable=True)
     career_history = Column(JSON, nullable=True)  # List of jobs [{company, title, start_date, end_date, description, level}]
     github_username = Column(String, nullable=True, index=True)

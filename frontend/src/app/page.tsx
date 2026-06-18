@@ -26,7 +26,8 @@ import {
   FileText,
   Terminal,
   Globe,
-  LayoutDashboard
+  LayoutDashboard,
+  Trash2
 } from "lucide-react";
 import {
   Radar,
@@ -43,12 +44,33 @@ import {
   Cell
 } from "recharts";
 import { CandidateList } from "./components/candidates/CandidateList";
+import { DisqualifiedCandidatesSection } from "./components/candidates/DisqualifiedCandidatesSection";
 import ExecutiveSummaryCard from "./components/dashboard/ExecutiveSummaryCard";
 import { PipelineVisualizer } from "./components/dashboard/PipelineVisualizer";
 import { TeamHeatmap } from "./components/candidates/TeamHeatmap";
 import JobManager from "./components/dashboard/JobManager";
 import APIExplorer from "./components/dashboard/APIExplorer";
 import { PipelineStory } from "./components/dashboard/PipelineStory";
+
+
+function formatApiError(detail: unknown, maxLen = 160): string {
+  if (!detail) return "Upload failed.";
+  let message = "";
+  if (typeof detail === "string") {
+    message = detail;
+  } else if (Array.isArray(detail)) {
+    message = detail
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (item && typeof item === "object" && "msg" in item) return String((item as { msg: string }).msg);
+        return JSON.stringify(item);
+      })
+      .join(" ");
+  } else {
+    message = String(detail);
+  }
+  return message.length > maxLen ? `${message.slice(0, maxLen)}…` : message;
+}
 
 
 export default function Dashboard() {
@@ -62,6 +84,13 @@ export default function Dashboard() {
   const [batchResults, setBatchResults] = useState<any[] | null>(null);
   const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
   const [candidates, setCandidates] = useState<any[]>([]);
+  const [disqualifiedCandidates, setDisqualifiedCandidates] = useState<any[]>([]);
+  const [rankingAnalytics, setRankingAnalytics] = useState<{
+    total_processed: number;
+    ranked_count: number;
+    disqualified_count: number;
+  } | null>(null);
+  const [overriddenCandidateIds, setOverriddenCandidateIds] = useState<Set<number>>(new Set());
   const [teamSkills, setTeamSkills] = useState<string[]>([]);
   const [team, setTeam] = useState<any[]>([]);
   const [selectedBenchmark, setSelectedBenchmark] = useState("YC_FOUNDING_ENGINEER");
@@ -113,6 +142,8 @@ export default function Dashboard() {
   const [debateHistory, setDebateHistory] = useState<any>([]);
   const [decisionCard, setDecisionCard] = useState<any>(null);
   const [copilotTyping, setCopilotTyping] = useState(false);
+  const [isFlushingResumes, setIsFlushingResumes] = useState(false);
+  const [flushSuccess, setFlushSuccess] = useState<string | null>(null);
 
   // Chat window scroll ref
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -173,6 +204,9 @@ export default function Dashboard() {
     setRole("");
     setJobs([]);
     setCandidates([]);
+    setDisqualifiedCandidates([]);
+    setRankingAnalytics(null);
+    setOverriddenCandidateIds(new Set());
     setSystemStatus(null);
   };
 
@@ -288,7 +322,16 @@ export default function Dashboard() {
       });
       if (rankRes.ok) {
         const rankData = await rankRes.json();
-        setCandidates(rankData);
+        if (Array.isArray(rankData)) {
+          setCandidates(rankData);
+          setDisqualifiedCandidates([]);
+          setRankingAnalytics(null);
+        } else {
+          setCandidates(rankData.ranked || []);
+          setDisqualifiedCandidates(rankData.disqualified || []);
+          setRankingAnalytics(rankData.analytics || null);
+        }
+        setOverriddenCandidateIds(new Set());
       } else {
         if (rankRes.status === 401) {
           handleLogout();
@@ -415,7 +458,7 @@ export default function Dashboard() {
         fetchInitialData();
       } else {
         const errObj = await res.json().catch(() => ({ detail: "Ingestion failed" }));
-        setUploadError(errObj.detail || "Failed to upload and parse candidates.");
+        setUploadError(formatApiError(errObj.detail, 120));
         setActiveUploadSession(null);
       }
     } catch (err) {
@@ -504,6 +547,78 @@ export default function Dashboard() {
     } finally {
       setCopilotTyping(false);
     }
+  };
+
+  const handleFlushResumes = async () => {
+    if (role === "viewer") return;
+    const total =
+      rankingAnalytics?.total_processed ??
+      candidates.length + disqualifiedCandidates.length;
+    const confirmed = window.confirm(
+      total > 0
+        ? `Permanently delete all ${total} resume${total === 1 ? "" : "s"} from the database? This cannot be undone.`
+        : "Permanently delete all resumes from the database? This cannot be undone.",
+    );
+    if (!confirmed) return;
+
+    setIsFlushingResumes(true);
+    setFlushSuccess(null);
+    setRankingError(null);
+
+    try {
+      const res = await fetch(`${getAPIUrl()}/api/candidates/flush`, {
+        method: "DELETE",
+        headers: getAuthHeaders(),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCandidates([]);
+        setDisqualifiedCandidates([]);
+        setRankingAnalytics(null);
+        setOverriddenCandidateIds(new Set());
+        setSelectedCandidate(null);
+        setDebateHistory([]);
+        setDecisionCard(null);
+        setFlushSuccess(data.message || "All resumes flushed from database.");
+        await fetchSystemStatus();
+      } else {
+        if (res.status === 401) {
+          handleLogout();
+          return;
+        }
+        const errObj = await res.json().catch(() => ({ detail: "Failed to flush resumes." }));
+        setRankingError(formatApiError(errObj.detail, 120));
+      }
+    } catch {
+      setRankingError("Could not reach server to flush resumes.");
+    } finally {
+      setIsFlushingResumes(false);
+    }
+  };
+
+  const handleMoveBackToReview = (candidateId: number) => {
+    const candidate = disqualifiedCandidates.find((c) => c.id === candidateId);
+    if (!candidate) return;
+
+    setOverriddenCandidateIds((prev) => new Set(prev).add(candidateId));
+    setCandidates((prev) => [
+      ...prev,
+      {
+        ...candidate,
+        status: "overridden",
+        rank: prev.length + 1,
+        reason: [],
+      },
+    ]);
+    setRankingAnalytics((prev) =>
+      prev
+        ? {
+            ...prev,
+            ranked_count: prev.ranked_count + 1,
+            disqualified_count: Math.max(0, prev.disqualified_count - 1),
+          }
+        : prev,
+    );
   };
 
   const selectCandidateForDetail = async (cand: any) => {
@@ -886,8 +1001,14 @@ export default function Dashboard() {
         <div className="bg-[#14141d] border border-[#242435] rounded-xl p-4 flex items-center justify-between">
           <div>
             <p className="text-xs text-slate-400 uppercase font-semibold tracking-wider">Ranked Candidates</p>
-            <h3 className="text-2xl font-bold text-white mt-1">{candidates.length} Profiles</h3>
-            <p className="text-[10px] text-slate-400 mt-1">Matched to the active job description</p>
+            <h3 className="text-2xl font-bold text-white mt-1">
+              {rankingAnalytics?.ranked_count ?? candidates.length} Profiles
+            </h3>
+            <p className="text-[10px] text-slate-400 mt-1">
+              {rankingAnalytics
+                ? `${rankingAnalytics.disqualified_count} auto-filtered as disqualified`
+                : "Matched to the active job description"}
+            </p>
           </div>
           <div className="bg-emerald-500/10 p-3 rounded-lg text-emerald-400">
             <UserCheck className="h-6 w-6" />
@@ -923,8 +1044,14 @@ export default function Dashboard() {
         <div className="bg-[#14141d] border border-[#242435] rounded-xl p-4 flex items-center justify-between">
           <div>
             <p className="text-xs text-slate-400 uppercase font-semibold tracking-wider">Evaluated Profiles</p>
-            <h3 className="text-2xl font-bold text-white mt-1">{systemStatus?.candidates || 0} Resumes</h3>
-            <p className="text-[10px] text-slate-400 mt-1">Twin-Graph node mappings complete</p>
+            <h3 className="text-2xl font-bold text-white mt-1">
+              {rankingAnalytics?.total_processed ?? systemStatus?.candidates ?? 0} Resumes
+            </h3>
+            <p className="text-[10px] text-slate-400 mt-1">
+              {rankingAnalytics
+                ? "Intelligent filtering applied to this job run"
+                : "Twin-Graph node mappings complete"}
+            </p>
           </div>
           <div className="bg-purple-500/10 p-3 rounded-lg text-purple-400">
             <Users className="h-6 w-6" />
@@ -947,7 +1074,7 @@ export default function Dashboard() {
         <section className="lg:col-span-5 flex flex-col gap-5 min-h-0">
 
           {/* RESUME INGESTION UPLOADER */}
-          <div className="bg-[#14141d] border border-[#242435] rounded-2xl p-5 flex flex-col shadow-md relative overflow-hidden">
+          <div className="bg-[#14141d] border border-[#242435] rounded-2xl p-5 flex flex-col shadow-md relative overflow-hidden min-w-0">
             <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-indigo-500 to-purple-500"></div>
             
             <h3 className="text-sm font-semibold flex items-center gap-2 mb-3 text-slate-200">
@@ -967,38 +1094,45 @@ export default function Dashboard() {
                 </div>
               </div>
             ) : (
-              <form onSubmit={handleUploadCandidate} className="space-y-3">
+              <form onSubmit={handleUploadCandidate} className="space-y-3 min-w-0">
                 {uploadSuccess && (
-                  <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-xl p-3 text-xs flex items-start gap-2 animate-fade-in">
+                  <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-xl p-3 text-xs flex items-start gap-2 animate-fade-in min-w-0">
                     <CheckCircle className="h-4 w-4 shrink-0 mt-0.5" />
-                    <span>{uploadSuccess}</span>
+                    <span className="break-words min-w-0">{uploadSuccess}</span>
                   </div>
                 )}
                 {uploadError && (
-                  <div className="bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl p-3 text-xs flex items-start gap-2 animate-fade-in">
+                  <div className="bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl p-3 text-xs flex items-start gap-2 animate-fade-in min-w-0">
                     <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
-                    <span>{uploadError}</span>
+                    <span className="break-words min-w-0 leading-relaxed">{uploadError}</span>
                   </div>
                 )}
 
                 {/* Batch Results Detail */}
                 {batchResults && batchResults.length > 0 && (
-                  <div className="space-y-1.5 max-h-[120px] overflow-y-auto pr-1 custom-scrollbar">
+                  <div className="space-y-1.5 max-h-[140px] overflow-y-auto overflow-x-hidden pr-1 custom-scrollbar min-w-0">
                     {batchResults.map((r: any, i: number) => (
-                      <div key={i} className={`flex items-center gap-2 text-[11px] px-3 py-1.5 rounded-lg border ${
+                      <div key={i} className={`rounded-lg border px-3 py-2 min-w-0 ${
                         r.status === 'success'
                           ? 'bg-emerald-500/5 border-emerald-500/15 text-emerald-400'
                           : 'bg-rose-500/5 border-rose-500/15 text-rose-400'
                       }`}>
-                        {r.status === 'success' ? (
-                          <CheckCircle className="h-3 w-3 shrink-0" />
-                        ) : (
-                          <AlertCircle className="h-3 w-3 shrink-0" />
+                        <div className="flex items-center gap-2 min-w-0">
+                          {r.status === 'success' ? (
+                            <CheckCircle className="h-3 w-3 shrink-0" />
+                          ) : (
+                            <AlertCircle className="h-3 w-3 shrink-0" />
+                          )}
+                          <span className="truncate font-medium text-[11px] min-w-0 flex-1">{r.filename}</span>
+                          {r.status === 'success' && (
+                            <span className="text-[10px] opacity-80 shrink-0 truncate max-w-[40%]">{r.name}</span>
+                          )}
+                        </div>
+                        {r.status !== 'success' && r.detail && (
+                          <p className="text-[10px] opacity-80 break-words leading-relaxed mt-1 pl-5 line-clamp-2">
+                            {formatApiError(r.detail, 120)}
+                          </p>
                         )}
-                        <span className="truncate font-medium">{r.filename}</span>
-                        <span className="ml-auto text-[10px] opacity-70 shrink-0">
-                          {r.status === 'success' ? r.name : r.detail}
-                        </span>
                       </div>
                     ))}
                   </div>
@@ -1236,19 +1370,51 @@ export default function Dashboard() {
 
         {/* --- RIGHT COLUMN: PIPELINE & CANDIDATES --- */}
         <section className="lg:col-span-7 bg-[#14141d] border border-[#242435] rounded-2xl p-5 shadow-md flex flex-col min-h-0 overflow-hidden">
-          <div className="flex items-center justify-between border-b border-[#242435] pb-4 mb-4">
-            <div>
-              <h2 className="text-base font-bold text-white flex items-center gap-2">
+          <div className="flex items-center justify-between border-b border-[#242435] pb-4 mb-4 gap-3">
+            <div className="min-w-0 flex-1">
+              <h2 className="text-base font-bold text-white flex items-center gap-2 flex-wrap">
                 Hiring Pipeline for: <span className="text-indigo-300 font-semibold">{activeJob.title}</span>
               </h2>
-              <p className="text-xs text-slate-400 mt-0.5">Showing ranked candidates based on active weights.</p>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Ranked candidates based on active weights. Unqualified profiles are separated below.
+              </p>
+              {flushSuccess && (
+                <p className="text-[10px] text-emerald-400 mt-1.5 flex items-center gap-1 animate-fade-in">
+                  <CheckCircle className="h-3 w-3 shrink-0" />
+                  <span className="truncate">{flushSuccess}</span>
+                </p>
+              )}
             </div>
 
-            {isRanking && (
-              <span className="text-xs text-indigo-400 flex items-center gap-2 animate-pulse font-medium">
-                <RefreshCw className="h-3 w-3 animate-spin" /> Recalculating...
-              </span>
-            )}
+            <div className="flex items-center gap-2 shrink-0">
+              {role !== "viewer" && (
+                <button
+                  type="button"
+                  onClick={handleFlushResumes}
+                  disabled={isFlushingResumes || isRanking}
+                  title="Delete all resumes from database"
+                  className="flush-resume-btn relative overflow-hidden flex items-center gap-2 px-3.5 py-2 rounded-xl text-[10px] font-bold uppercase tracking-wider text-white border border-rose-400/40 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:animate-none shadow-lg shadow-rose-900/30"
+                >
+                  {isFlushingResumes ? (
+                    <RefreshCw className="h-3.5 w-3.5 animate-spin relative z-10" />
+                  ) : (
+                    <Trash2 className="h-3.5 w-3.5 relative z-10" />
+                  )}
+                  <span className="relative z-10 hidden sm:inline">
+                    {isFlushingResumes ? "Flushing..." : "Flush Resumes"}
+                  </span>
+                  <span className="relative z-10 sm:hidden">
+                    {isFlushingResumes ? "..." : "Flush"}
+                  </span>
+                </button>
+              )}
+
+              {isRanking && (
+                <span className="text-xs text-indigo-400 flex items-center gap-2 animate-pulse font-medium whitespace-nowrap">
+                  <RefreshCw className="h-3 w-3 animate-spin" /> Recalculating...
+                </span>
+              )}
+            </div>
           </div>
 
           {/* Candidate list wrapper */}
@@ -1267,12 +1433,12 @@ export default function Dashboard() {
                   </button>
                 </div>
               </div>
-            ) : isRanking && candidates.length === 0 ? (
+            ) : isRanking && candidates.length === 0 && disqualifiedCandidates.length === 0 ? (
               <div className="flex-1 flex flex-col items-center justify-center py-20 text-slate-400 text-xs gap-3">
                 <RefreshCw className="h-7 w-7 text-indigo-500 animate-spin" />
                 <span>Computing candidate scores across 8 vectors...</span>
               </div>
-            ) : candidates.length === 0 ? (
+            ) : candidates.length === 0 && disqualifiedCandidates.length === 0 ? (
               <div className="flex-1 flex flex-col items-center justify-center py-16 text-slate-400 text-xs text-center p-6 border border-dashed border-[#242435] rounded-2xl">
                 <Users className="h-10 w-10 text-slate-500 mb-2" />
                 <p className="font-semibold text-slate-300 text-sm">No Candidates Evaluated</p>
@@ -1281,10 +1447,12 @@ export default function Dashboard() {
                 </p>
               </div>
             ) : (
-              candidates.map((cand) => {
+              <>
+              {candidates.map((cand) => {
                 const matchesBenchmark = cand.final_score > 0.85;
                 const matchesYC = cand.final_score > 0.90;
                 const hasGap = cand.modifiers.team_gap_score > 0.5;
+                const isOverridden = cand.status === "overridden";
 
                 return (
                   <div
@@ -1305,8 +1473,13 @@ export default function Dashboard() {
                       </div>
 
                       <div className="space-y-1">
-                        <h4 className="font-bold text-sm text-slate-100 group-hover:text-indigo-300 transition-colors">
+                        <h4 className="font-bold text-sm text-slate-100 group-hover:text-indigo-300 transition-colors flex items-center gap-2">
                           {cand.name}
+                          {isOverridden && (
+                            <span className="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                              Manual Review
+                            </span>
+                          )}
                         </h4>
                         <p className="text-xs text-slate-400 flex items-center gap-1">
                           <Code className="h-3.5 w-3.5 text-indigo-400" /> github: {cand.github_username}
@@ -1355,7 +1528,17 @@ export default function Dashboard() {
                     </div>
                   </div>
                 );
-              })
+              })}
+
+              <DisqualifiedCandidatesSection
+                candidates={disqualifiedCandidates}
+                analytics={rankingAnalytics}
+                onSelectCandidate={selectCandidateForDetail}
+                onMoveBackToReview={handleMoveBackToReview}
+                selectedCandidateId={selectedCandidate?.id}
+                overriddenIds={overriddenCandidateIds}
+              />
+              </>
             )}
           </div>
         </section>
