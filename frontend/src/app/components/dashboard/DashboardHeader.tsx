@@ -43,7 +43,7 @@ export const DashboardHeader = memo(function DashboardHeader({
         </div>
         <div>
           <h1 className="text-xl font-bold tracking-tight text-white flex items-center gap-2">
-            Antigravity{" "}
+            Talent Rank{" "}
             <span className="text-xs bg-indigo-500/20 text-indigo-400 px-2 py-0.5 rounded-full border border-indigo-500/30">
               AI Architect
             </span>

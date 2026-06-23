@@ -148,7 +148,7 @@ class LinkedInIntelligenceEngine:
                 continue
 
             # Check seniority level
-            seniority = job.get("seniority", "mid").lower()
+            seniority = (job.get("seniority") or "mid").lower()
             level = SENIORITY_LEVELS.get(seniority, 2)
             max_seniority = max(max_seniority, level)
 
@@ -180,7 +180,7 @@ class LinkedInIntelligenceEngine:
         if certifications:
             high_value_count = sum(
                 1 for cert in certifications
-                if any(hv in cert.lower() for hv in HIGH_VALUE_CERTIFICATIONS)
+                if cert and any(hv in cert.lower() for hv in HIGH_VALUE_CERTIFICATIONS)
             )
             score += min(0.35, high_value_count * 0.12 + len(certifications) * 0.03)
 
@@ -212,7 +212,7 @@ class LinkedInIntelligenceEngine:
         for job in career_history:
             if not isinstance(job, dict):
                 continue
-            seniority = job.get("seniority", "mid").lower()
+            seniority = (job.get("seniority") or "mid").lower()
             level = SENIORITY_LEVELS.get(seniority, 2)
             levels.append(level)
 
@@ -251,6 +251,8 @@ class LinkedInIntelligenceEngine:
 
         high_value_count = 0
         for cert in certifications:
+            if not cert:
+                continue
             cert_lower = cert.lower()
             if any(hv in cert_lower for hv in HIGH_VALUE_CERTIFICATIONS):
                 high_value_count += 1
@@ -306,6 +308,8 @@ class LinkedInIntelligenceEngine:
 
     def _is_advanced_degree(self, degree: str) -> bool:
         """Check if a degree is advanced (Masters, PhD, MBA)."""
+        if not degree:
+            return False
         degree_lower = degree.lower()
         return any(kw in degree_lower for kw in ["m.s.", "ms", "master", "phd", "ph.d", "mba", "doctorate"])
 
@@ -321,7 +325,7 @@ class LinkedInIntelligenceEngine:
             "ml": {"pytorch", "tensorflow", "scikit-learn", "openai", "gemini", "langchain", "huggingface"},
         }
         matched = set()
-        skills_lower = {s.lower() for s in skills}
+        skills_lower = {s.lower() for s in skills if s}
         for cat, cat_skills in categories.items():
             if skills_lower & cat_skills:
                 matched.add(cat)

@@ -10,7 +10,7 @@ from app.services.linkedin_intelligence import linkedin_intelligence_engine
 from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.db.models import Candidate, User
-from app.services.llm_service import llm_service
+from app.services.llm_service import AIResumeParsingError, llm_service
 from app.db.qdrant_client import qdrant_manager
 from app.services.github_service import github_service
 from app.services.behavioral_intel import behavioral_intelligence_engine
@@ -262,7 +262,23 @@ async def upload_candidate(
 
     t_extracted = time.time()
     # Send text to AI resume parser
-    parsed = llm_service.parse_resume(text)
+    try:
+        parsed = llm_service.parse_resume(text)
+    except AIResumeParsingError as e:
+        log_audit_event(
+            db=db,
+            action="CANDIDATE_UPLOAD_FAILED",
+            username=current_user.username,
+            user_id=current_user.id,
+            ip_address=client_ip,
+            details={"filename": filename, "reason": str(e)}
+        )
+        if session_id:
+            pipeline_events_service.emit_stage(session_id, "ai_parsing", status="error", details={"reason": str(e)})
+        raise HTTPException(
+            status_code=503,
+            detail="AI resume parser is unavailable. Configure GEMINI_API_KEY or try again later."
+        ) from e
     t_parsed = time.time()
     
     if session_id:
@@ -529,4 +545,3 @@ def get_candidate_github_analysis(
         "github_stats": stats,
         "behavioral_profile": profile
     }
-

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.models import Candidate, Job, TeamMember, GraphNode, GraphEdge
 from app.db.qdrant_client import qdrant_manager
-from app.services.llm_service import llm_service
+from app.services.llm_service import _skill_has_text_evidence, llm_service
 from app.services.skill_adjacency import skill_adjacency_engine
 from app.services.career_trajectory import career_trajectory_engine
 from app.services.behavioral_intel import behavioral_intelligence_engine
@@ -255,13 +255,14 @@ class RankingEngine:
             return 0.5
 
         candidate_text = (candidate.resume_text or "").lower()
+        original_text = candidate.resume_text or ""
+        score_components = []
+        
         c_skills = {s.lower() for s in (candidate.skills or [])}
         for skill in c_skills:
             candidate_text += f" {skill}"
         for job in (candidate.career_history or []):
             candidate_text += f" {(job.get('title') or '').lower()} {(job.get('description') or '').lower()}"
-
-        score_components = []
 
         # 1. Key requirements match
         if requirements:
@@ -280,6 +281,10 @@ class RankingEngine:
                         req_matches += 1.0
                         continue
                         
+                if _skill_has_text_evidence(original_text, req):
+                    req_matches += 1.0
+                    continue
+                        
                 words = [w for w in req_lower.split() if len(w) > 4]
                 if words:
                     match_ratio = sum(1 for w in words if w in candidate_text) / len(words)
@@ -295,7 +300,7 @@ class RankingEngine:
                 p_lower = prereq.lower()
                 if p_lower in c_skills:
                     prereq_matches += 1.0
-                elif p_lower in candidate_text:
+                elif _skill_has_text_evidence(original_text, prereq):
                     prereq_matches += 0.6
             score_components.append(prereq_matches / len(prerequisites))
 
@@ -421,16 +426,29 @@ class RankingEngine:
         semantic_threshold: float,
         overall_threshold: float,
     ) -> tuple[bool, list[str]]:
-        checks = {
-            "No matching required skills": direct_match_ratio == 0,
-            "Semantic fit below threshold": semantic_score < semantic_threshold,
-            "No transferable skills detected": transferable_val <= 0,
-            "No adjacent skills from knowledge graph": adjacent_only_score <= 0,
-            "Overall ranking score below threshold": final_score < overall_threshold,
-        }
-        skill_failures = all(checks[k] for k in checks if k != "Overall ranking score below threshold")
-        is_disqualified = skill_failures and final_score < overall_threshold
-        reasons = [label for label, failed in checks.items() if failed] if is_disqualified else []
+        reasons = []
+        
+        # 1. Core Score Failure
+        if final_score < overall_threshold:
+            reasons.append("Overall ranking score below threshold")
+            
+        # 2. Complete Skill Mismatch (No Direct, No Adjacent)
+        if direct_match_ratio == 0 and adjacent_only_score <= 0:
+            reasons.append("No matching required or adjacent skills detected")
+            
+        # 3. Semantic Mismatch
+        if semantic_score < semantic_threshold:
+            reasons.append("Semantic fit below threshold")
+
+        # Disqualify if they fail the core score threshold OR if they have absolutely no relevant skills
+        is_disqualified = (final_score < overall_threshold) or (direct_match_ratio == 0 and adjacent_only_score <= 0)
+        
+        # 4. Critical Semantic Failure
+        if semantic_score < (semantic_threshold * 0.8) and final_score < (overall_threshold + 0.15):
+            is_disqualified = True
+            if "Critical semantic mismatch with job requirements" not in reasons:
+                reasons.append("Critical semantic mismatch with job requirements")
+
         return is_disqualified, reasons
 
     def _flatten_ranking_result(self, result: dict | list) -> list:

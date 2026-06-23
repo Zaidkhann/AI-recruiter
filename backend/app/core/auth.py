@@ -7,10 +7,12 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.db.models import User
 
+import os
+
 # JWT Configuration
-SECRET_KEY = "hackathon-secret-key-change-in-production-grids"
+SECRET_KEY = os.getenv("SECRET_KEY", "hackathon-secret-key-change-in-production-grids")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 120
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))  # 24 hours
 
 security_scheme = HTTPBearer()
 
@@ -47,6 +49,7 @@ def create_access_token(data: dict, expires_delta: datetime.timedelta = None) ->
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security_scheme), db: Session = Depends(get_db)) -> User:
     """Extract and validate user from JWT token."""
     token = credentials.credentials
+    print(f"Auth attempt - token received: {bool(token)}, token length: {len(token) if token else 0}")
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials or session expired",
@@ -55,14 +58,25 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
+        print(f"JWT decode success - username: {username}")
         if username is None:
             raise credentials_exception
-    except jwt.PyJWTError:
+    except jwt.ExpiredSignatureError:
+        print("JWT decode error: Token expired")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has expired",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except jwt.PyJWTError as e:
+        print(f"JWT decode error: {e}")
         raise credentials_exception
     
     user = db.query(User).filter(User.username == username).first()
     if user is None:
+        print(f"User not found in database: {username}")
         raise credentials_exception
+    print(f"User authenticated successfully: {username}, role: {user.role}")
     return user
 
 def require_role(required_role: str):

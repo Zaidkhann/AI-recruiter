@@ -7,12 +7,27 @@ from pydantic import BaseModel, Field
 from app.core.auth import require_role
 from app.core.audit import log_audit_event
 
+from typing import Optional, List
+
 router = APIRouter(prefix="/api/jobs", tags=["Jobs"])
 
 class JobCreate(BaseModel):
     title: str = Field(..., min_length=3, max_length=150)
     description: str = Field(..., min_length=10, max_length=2000)
     benchmark_profile: str = Field(default="GENERAL_ENGINEER", pattern="^(YC_FOUNDER|YC_FOUNDING_ENGINEER|FAANG_STAFF|DEV_OPS|GENERAL_ENGINEER|DEFAULT)$")
+    required_skills: Optional[List[str]] = Field(default=None)
+
+class SuggestSkillsQuery(BaseModel):
+    title: str = Field(..., min_length=3, max_length=150)
+    description: str = Field(..., min_length=10, max_length=2000)
+
+@router.post("/suggest-skills")
+def suggest_skills_endpoint(
+    payload: SuggestSkillsQuery,
+    _current_user: User = Depends(require_role("recruiter"))
+):
+    skills = llm_service.suggest_skills(payload.title, payload.description)
+    return {"skills": skills}
 
 @router.get("")
 def get_jobs(
@@ -47,6 +62,9 @@ def create_job(
     
     # Parse description using LLM
     graph_schema = llm_service.parse_job_description(desc_cleaned)
+    if payload.required_skills is not None:
+        graph_schema["skills_required"] = payload.required_skills
+        graph_schema["required_skills"] = payload.required_skills
     
     new_job = Job(
         title=title_cleaned,
@@ -91,6 +109,9 @@ def update_job(
     desc_cleaned = payload.description.replace("<", "&lt;").replace(">", "&gt;").strip()
     
     graph_schema = llm_service.parse_job_description(desc_cleaned)
+    if payload.required_skills is not None:
+        graph_schema["skills_required"] = payload.required_skills
+        graph_schema["required_skills"] = payload.required_skills
 
     job.title = title_cleaned
     job.description = desc_cleaned

@@ -75,6 +75,10 @@ export default function JobManager({ token, role, getAPIUrl, onActiveJobChanged,
   const [formDesc, setFormDesc] = useState("");
   const [formBenchmark, setFormBenchmark] = useState("YC_FOUNDING_ENGINEER");
   const [formSubmitting, setFormSubmitting] = useState(false);
+  const [formSkills, setFormSkills] = useState<string[]>([]);
+  const [newSkillInput, setNewSkillInput] = useState("");
+  const [aiSuggesting, setAiSuggesting] = useState(false);
+  const [suggestedSkills, setSuggestedSkills] = useState<string[]>([]);
 
   // Talent Rediscovery states
   const [scanningJobId, setScanningJobId] = useState<number | null>(null);
@@ -124,6 +128,9 @@ export default function JobManager({ token, role, getAPIUrl, onActiveJobChanged,
     setFormTitle("");
     setFormDesc("");
     setFormBenchmark("YC_FOUNDING_ENGINEER");
+    setFormSkills([]);
+    setNewSkillInput("");
+    setSuggestedSkills([]);
     setSelectedJob(null);
     setShowModal("create");
   };
@@ -134,7 +141,53 @@ export default function JobManager({ token, role, getAPIUrl, onActiveJobChanged,
     setFormTitle(job.title);
     setFormDesc(job.description);
     setFormBenchmark(job.benchmark_profile || "YC_FOUNDING_ENGINEER");
+    setFormSkills(job.graph_schema?.required_skills || job.graph_schema?.skills_required || []);
+    setNewSkillInput("");
+    setSuggestedSkills([]);
     setShowModal("edit");
+  };
+
+  const handleRemoveSkill = (skill: string) => {
+    setFormSkills(formSkills.filter(s => s !== skill));
+  };
+
+  const handleSelectSuggestedSkill = (skill: string) => {
+    if (!formSkills.includes(skill)) {
+      setFormSkills([...formSkills, skill]);
+    }
+    setSuggestedSkills(suggestedSkills.filter(s => s !== skill));
+  };
+
+  const handleAiSuggestSkills = async () => {
+    if (!formTitle || !formDesc) {
+      alert("Please provide a job title and description first so the AI can suggest relevant skills.");
+      return;
+    }
+    setAiSuggesting(true);
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+    try {
+      const res = await fetch(`${getAPIUrl()}/api/jobs/suggest-skills`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ title: formTitle, description: formDesc })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const apiSkills = data.skills || [];
+        // Filter out skills that are already selected
+        setSuggestedSkills(apiSkills.filter((s: string) => !formSkills.includes(s)));
+      } else {
+        alert("Failed to fetch AI suggestions.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Network error fetching suggestions.");
+    } finally {
+      setAiSuggesting(false);
+    }
   };
 
   const handleFormSubmit = async (e: React.FormEvent) => {
@@ -153,7 +206,8 @@ export default function JobManager({ token, role, getAPIUrl, onActiveJobChanged,
     const payload = {
       title: formTitle,
       description: formDesc,
-      benchmark_profile: formBenchmark
+      benchmark_profile: formBenchmark,
+      required_skills: formSkills
     };
 
     try {
@@ -745,6 +799,102 @@ export default function JobManager({ token, role, getAPIUrl, onActiveJobChanged,
                     className="w-full bg-[#0d0d16] border border-[#242435] focus:border-indigo-500 focus:outline-none p-4 rounded-xl text-slate-100 leading-relaxed resize-none"
                     required
                   />
+                </div>
+
+                {/* Manual & AI-based Required Skills Section */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Required Skills</label>
+                    <button
+                      type="button"
+                      onClick={handleAiSuggestSkills}
+                      disabled={aiSuggesting}
+                      className="bg-indigo-600/10 hover:bg-indigo-600/25 border border-indigo-500/20 text-indigo-400 hover:text-white px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      {aiSuggesting ? (
+                        <RefreshCw className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Sparkles className="h-3 w-3" />
+                      )}
+                      AI Suggest Skills
+                    </button>
+                  </div>
+
+                  {/* Skills tags list */}
+                  <div className="flex flex-wrap gap-1.5 min-h-[40px] p-3 rounded-xl border border-[#242435] bg-[#0d0d16]/50">
+                    {formSkills.length === 0 ? (
+                      <span className="text-slate-500 italic text-[11px] self-center">No skills added yet. Use AI suggest or type below to add.</span>
+                    ) : (
+                      formSkills.map(skill => (
+                        <span key={skill} className="bg-indigo-600/10 text-indigo-400 border border-indigo-500/15 px-2.5 py-1 rounded-lg text-[11px] font-bold flex items-center gap-1.5">
+                          {skill}
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveSkill(skill)}
+                            className="text-indigo-400/60 hover:text-rose-400 transition-colors text-xs font-black cursor-pointer"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))
+                    )}
+                  </div>
+
+                  {/* Manual add input */}
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={newSkillInput}
+                      onChange={(e) => setNewSkillInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          const clean = newSkillInput.trim();
+                          if (clean && !formSkills.includes(clean)) {
+                            setFormSkills([...formSkills, clean]);
+                          }
+                          setNewSkillInput("");
+                        }
+                      }}
+                      placeholder="Type a skill and press Enter or click Add"
+                      className="flex-1 bg-[#0d0d16] border border-[#242435] focus:border-indigo-500 focus:outline-none px-4 py-2 rounded-xl text-slate-100 text-xs"
+                    />
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const clean = newSkillInput.trim();
+                        if (clean && !formSkills.includes(clean)) {
+                          setFormSkills([...formSkills, clean]);
+                        }
+                        setNewSkillInput("");
+                      }}
+                      className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/60 px-4 rounded-xl font-bold cursor-pointer transition-all active:scale-95 shrink-0"
+                    >
+                      Add
+                    </button>
+                  </div>
+
+                  {/* AI Suggested skills list */}
+                  {suggestedSkills.length > 0 && (
+                    <div className="space-y-1.5 bg-[#0d0d16]/30 border border-[#242435]/50 rounded-xl p-3.5 animate-fade-in">
+                      <p className="text-[9px] font-extrabold text-slate-500 uppercase tracking-wider">AI Suggested (Click to Add)</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {suggestedSkills.map(skill => (
+                          <button
+                            key={skill}
+                            type="button"
+                            onClick={() => handleSelectSuggestedSkill(skill)}
+                            className="bg-[#1b1b2a] hover:bg-indigo-600/20 border border-slate-700/60 hover:border-indigo-500/50 text-[10px] font-semibold text-slate-200 hover:text-indigo-400 px-2 py-1 rounded transition-all active:scale-95 cursor-pointer flex items-center gap-1"
+                          >
+                            <Plus className="h-3 w-3" />
+                            {skill}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex gap-3 justify-end pt-3 border-t border-[#242435] mt-6">

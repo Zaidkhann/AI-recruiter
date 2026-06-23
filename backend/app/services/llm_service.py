@@ -7,11 +7,68 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Dimension returned by models/gemini-embedding-001
+EMBEDDING_DIM = 3072
+
 # Track LLM status
 llm_status = {
     "provider": "gemini",
     "status": "connected" if settings.GEMINI_API_KEY else "unavailable"
 }
+
+
+class AIResumeParsingError(RuntimeError):
+    """Raised when resume parsing cannot be completed by the AI parser."""
+
+KNOWN_TECH_SKILLS = [
+    "Python", "React", "Docker", "Kubernetes", "AWS", "FastAPI", "Rust",
+    "Go", "TypeScript", "PostgreSQL", "Redis"
+]
+
+
+def _skill_has_text_evidence(text: str, skill: str) -> bool:
+    """Match skill names as terms, not substrings inside unrelated words."""
+    if not text or not skill:
+        return False
+
+    normalized_skill = skill.strip()
+    if not normalized_skill:
+        return False
+
+    if normalized_skill.lower() == "go":
+        return bool(
+            re.search(r"(?<![A-Za-z0-9+#.])Go(?![A-Za-z0-9+#.])", text)
+            or re.search(r"(?<![A-Za-z0-9+#.])golang(?![A-Za-z0-9+#.])", text, re.IGNORECASE)
+        )
+
+    escaped = re.escape(normalized_skill)
+    return bool(re.search(rf"(?<![A-Za-z0-9+#.]){escaped}(?![A-Za-z0-9+#.])", text, re.IGNORECASE))
+
+
+def _extract_known_skills(text: str, include_leadership: bool = False) -> list[str]:
+    skills = KNOWN_TECH_SKILLS + (["Leadership"] if include_leadership else [])
+    return [skill for skill in skills if _skill_has_text_evidence(text, skill)]
+
+
+def _clean_parsed_skills(skills: list, source_text: str) -> list:
+    cleaned = []
+    seen = set()
+    for skill in skills or []:
+        if not isinstance(skill, str):
+            continue
+        normalized = skill.strip()
+        if not normalized:
+            continue
+
+        canonical = "Go" if normalized.lower() in {"go", "golang"} else normalized
+        if canonical.lower() in {"go", "golang"} and not _skill_has_text_evidence(source_text, "Go"):
+            continue
+
+        key = canonical.lower()
+        if key not in seen:
+            cleaned.append(canonical)
+            seen.add(key)
+    return cleaned
 
 if settings.GEMINI_API_KEY:
     genai.configure(api_key=settings.GEMINI_API_KEY)
@@ -38,12 +95,12 @@ def execute_with_retry(func, *args, retries=3, initial_delay=1.0, **kwargs):
 class LLMService:
     def __init__(self):
         self.embedding_model = "models/gemini-embedding-001"
-        self.chat_model = "gemini-1.5-flash"
+        self.chat_model = "gemini-3.1-flash-lite"
 
     def get_embedding(self, text: str) -> list:
         if not settings.GEMINI_API_KEY:
             # Return zero vector in fallback mode so that ranking can fallback gracefully
-            return [0.0] * 768
+            return [0.0] * EMBEDDING_DIM
 
         try:
             def _call():
@@ -70,7 +127,7 @@ class LLMService:
             return execute_with_retry(_call)
         except Exception as e:
             logger.error(f"Error calling Gemini Embedding after retries: {e}")
-            return [0.0] * 768
+            return [0.0] * EMBEDDING_DIM
 
     def parse_job_description(self, jd_text: str) -> dict:
         prompt = f"""
@@ -97,8 +154,7 @@ class LLMService:
         
         # Simple heuristic parser if Gemini is offline
         def _fallback():
-            skills = ["Python", "React", "Docker", "Kubernetes", "AWS", "FastAPI", "Rust", "Go", "TypeScript", "PostgreSQL", "Redis", "Leadership"]
-            found_skills = [s for s in skills if s.lower() in jd_text.lower()]
+            found_skills = _extract_known_skills(jd_text, include_leadership=True)
             req_skills = [s for s in found_skills if s.lower() != "leadership"]
             pref_skills = ["Rust", "Go"] if "python" in jd_text.lower() else ["React"]
             has_leadership = "leadership" in jd_text.lower() or "lead" in jd_text.lower() or "staff" in jd_text.lower() or "manager" in jd_text.lower()
@@ -135,9 +191,48 @@ class LLMService:
             logger.error(f"Error parsing JD via Gemini: {e}")
             return _fallback()
 
+    def suggest_skills(self, title: str, description: str) -> list:
+        prompt = f"""
+        Given the Job Title: "{title}"
+        And the Job Description: "{description}"
+        Suggest a list of 5-10 key technical skills/technologies that are highly relevant or required for this position.
+        Return ONLY a JSON array of strings, e.g. ["Python", "React", "Docker"].
+        """
+        def _fallback():
+            found_skills = _extract_known_skills(f"{title}\n{description}")
+            return found_skills if found_skills else ["Python", "Systems Engineering"]
+
+        if not settings.GEMINI_API_KEY:
+            return _fallback()
+
+        try:
+            def _call():
+                model = genai.GenerativeModel(self.chat_model)
+                response = model.generate_content(
+                    prompt,
+                    generation_config={"response_mime_type": "application/json"}
+                )
+                return json.loads(response.text.strip())
+            res = execute_with_retry(_call)
+            if isinstance(res, list):
+                return res
+            elif isinstance(res, dict) and "skills" in res:
+                return res["skills"]
+            return _fallback()
+        except Exception as e:
+            logger.error(f"Error suggesting skills via Gemini: {e}")
+            return _fallback()
+
     def parse_resume(self, resume_text: str) -> dict:
+        if not settings.GEMINI_API_KEY:
+            raise AIResumeParsingError("AI resume parser is unavailable because GEMINI_API_KEY is not configured.")
+
         prompt = f"""
         Analyze the following candidate resume/profile text and extract key structured information.
+        Extract skills only when the resume contains explicit evidence for that skill.
+        Do not infer skills from substrings inside unrelated words.
+        Treat "Go" as the Go programming language only when written as a standalone term "Go" or as "Golang".
+        Do not extract "Go" from words or names such as Government, Google, good, goals, or ongoing.
         Return ONLY a JSON object matching this schema:
         {{
             "name": "Candidate Full Name",
@@ -174,86 +269,6 @@ class LLMService:
         Resume Text:
         {resume_text}
         """
-        
-        # Simple heuristic parser if Gemini is offline
-        def _fallback():
-            # Extract email
-            email = "candidate@example.com"
-            email_match = re.search(r'[\w\.-]+@[\w\.-]+', resume_text)
-            if email_match:
-                email = email_match.group(0)
-                name = email.split('@')[0].replace('.', ' ').title()
-            else:
-                name = "Candidate Name"
-                
-            # Extract phone
-            phone = None
-            phone_match = re.search(r'\+?[\d\s-]{10,15}', resume_text)
-            if phone_match:
-                phone = phone_match.group(0).strip()
-                
-            # Extract GitHub username
-            github_username = None
-            github_match = re.search(r'github\.com/([\w-]+)', resume_text, re.IGNORECASE)
-            if github_match:
-                github_username = github_match.group(1)
-            elif "github:" in resume_text.lower():
-                gh_match = re.search(r'github:\s*([\w-]+)', resume_text, re.IGNORECASE)
-                if gh_match:
-                    github_username = gh_match.group(1)
-            
-            github_url = f"https://github.com/{github_username}" if github_username else None
-            
-            # Extract LinkedIn
-            linkedin_url = None
-            li_match = re.search(r'(linkedin\.com/in/[\w-]+)', resume_text, re.IGNORECASE)
-            if li_match:
-                linkedin_url = "https://" + li_match.group(1)
-                
-            # Extract Portfolio/Website
-            portfolio_url = None
-            personal_website = None
-            web_matches = re.findall(r'(https?://[a-zA-Z0-9.-]+\.[a-zA-Z]{2,6})', resume_text)
-            for url in web_matches:
-                if "github.com" not in url and "linkedin.com" not in url and "twitter.com" not in url:
-                    if not portfolio_url:
-                        portfolio_url = url
-                        personal_website = url
-                    else:
-                        personal_website = url
-            
-            # Extract Twitter/X
-            twitter_x = None
-            tw_match = re.search(r'(twitter\.com/[\w-]+|x\.com/[\w-]+)', resume_text, re.IGNORECASE)
-            if tw_match:
-                twitter_x = "https://" + tw_match.group(1)
-
-            skills = ["Python", "React", "Docker", "Kubernetes", "AWS", "FastAPI", "Rust", "Go", "TypeScript", "PostgreSQL", "Redis"]
-            found_skills = [s for s in skills if s.lower() in resume_text.lower()]
-            
-            return {
-                "name": name,
-                "email": email,
-                "phone": phone,
-                "location": "San Francisco, CA" if "san francisco" in resume_text.lower() else "Remote",
-                "skills": found_skills if found_skills else ["Python"],
-                "career_history": [
-                    {"company": "Previous Company", "title": "Software Engineer", "duration_months": 12, "description": "Built system features", "seniority": "MID"}
-                ],
-                "education": [
-                    {"school": "State University", "degree": "B.S.", "field_of_study": "Computer Science", "graduation_year": "2020"}
-                ],
-                "certifications": [],
-                "github_username": github_username,
-                "github_url": github_url,
-                "linkedin_url": linkedin_url,
-                "portfolio_url": portfolio_url,
-                "personal_website": personal_website,
-                "twitter_x": twitter_x
-            }
-
-        if not settings.GEMINI_API_KEY:
-            return _fallback()
 
         try:
             def _call():
@@ -263,10 +278,35 @@ class LLMService:
                     generation_config={"response_mime_type": "application/json"}
                 )
                 return json.loads(response.text.strip())
-            return execute_with_retry(_call)
+            parsed = execute_with_retry(_call)
+            if not isinstance(parsed, dict):
+                raise AIResumeParsingError("AI resume parser returned an invalid response.")
+            parsed["skills"] = _clean_parsed_skills(parsed.get("skills", []), resume_text)
+
+            # Sanitize certifications
+            if isinstance(parsed.get("certifications"), list):
+                parsed["certifications"] = [c for c in parsed["certifications"] if c and isinstance(c, str)]
+                
+            # Sanitize education
+            if isinstance(parsed.get("education"), list):
+                parsed["education"] = [e for e in parsed["education"] if isinstance(e, dict)]
+                for edu in parsed["education"]:
+                    if edu.get("degree") is None: edu["degree"] = ""
+                    
+            # Sanitize career history
+            if isinstance(parsed.get("career_history"), list):
+                parsed["career_history"] = [j for j in parsed["career_history"] if isinstance(j, dict)]
+                for job in parsed["career_history"]:
+                    if job.get("title") is None: job["title"] = ""
+                    if job.get("seniority") is None: job["seniority"] = "mid"
+                    if job.get("description") is None: job["description"] = ""
+
+            return parsed
+        except AIResumeParsingError:
+            raise
         except Exception as e:
             logger.error(f"Error parsing resume via Gemini: {e}")
-            return _fallback()
+            raise AIResumeParsingError("AI resume parser failed to process the resume.") from e
 
     def _generate_debate_fallback(self, candidate_profile: dict, job_details: dict) -> list:
         """Heuristic fallback for hiring committee debate when Gemini is unavailable."""
@@ -600,5 +640,3 @@ Return ONLY valid JSON.
         }
 
 llm_service = LLMService()
-
-
