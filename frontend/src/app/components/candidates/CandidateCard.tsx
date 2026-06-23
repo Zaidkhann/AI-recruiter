@@ -1,7 +1,7 @@
 "use client";
 
 import React, { memo, useState } from "react";
-import { Code, ChevronRight, ChevronDown, Info } from "lucide-react";
+import { Code, ChevronRight, ChevronDown, Info, FileText } from "lucide-react";
 import type { Candidate } from "@/app/lib/types";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -9,9 +9,10 @@ interface Props {
   candidate: Candidate;
   isSelected: boolean;
   onClick: () => void;
+  onViewResume: (e: React.MouseEvent<HTMLButtonElement>) => void;
 }
 
-export const CandidateCard = memo(function CandidateCard({ candidate: cand, isSelected, onClick }: Props) {
+export const CandidateCard = memo(function CandidateCard({ candidate: cand, isSelected, onClick, onViewResume }: Props) {
   const hasGap = cand.modifiers.team_gap_score > 0.5;
   const [expandedFactor, setExpandedFactor] = useState<string | null>(null);
 
@@ -91,11 +92,22 @@ export const CandidateCard = memo(function CandidateCard({ candidate: cand, isSe
           )}
         </div>
 
-        <div className="text-right">
-          <div className="text-xs text-slate-400 font-medium">Match Score</div>
-          <div className="text-base font-extrabold text-indigo-400 flex items-center gap-1.5 justify-end">
-            {cand.overall_score || Math.round(cand.final_score * 100)}%
-            <ChevronRight className="h-4 w-4 text-slate-500 group-hover:text-indigo-400 transition-colors" />
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            title={`View ${cand.name}'s resume`}
+            onClick={onViewResume}
+            className="h-8 px-2.5 rounded-lg border border-[#34344a] bg-[#14141d] text-[10px] font-bold uppercase tracking-wider text-slate-300 hover:text-indigo-200 hover:border-indigo-500/60 hover:bg-indigo-500/10 transition-colors flex items-center gap-1.5"
+          >
+            <FileText className="h-3.5 w-3.5" />
+            Resume
+          </button>
+          <div className="text-right">
+            <div className="text-xs text-slate-400 font-medium">Match Score</div>
+            <div className="text-base font-extrabold text-indigo-400 flex items-center gap-1.5 justify-end">
+              {cand.overall_score || Math.round(cand.final_score * 100)}%
+              <ChevronRight className="h-4 w-4 text-slate-500 group-hover:text-indigo-400 transition-colors" />
+            </div>
           </div>
         </div>
       </div>

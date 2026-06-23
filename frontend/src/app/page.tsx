@@ -21,13 +21,17 @@ import {
   HelpCircle as QuestionIcon,
   CheckCircle,
   MessageSquare,
+  ClipboardList,
   BarChart2,
   Upload,
   FileText,
   Terminal,
   Globe,
   LayoutDashboard,
-  Trash2
+  Trash2,
+  LayoutGrid,
+  List,
+  Download
 } from "lucide-react";
 import {
   Radar,
@@ -49,8 +53,9 @@ import ExecutiveSummaryCard from "./components/dashboard/ExecutiveSummaryCard";
 import { PipelineVisualizer } from "./components/dashboard/PipelineVisualizer";
 import { TeamHeatmap } from "./components/candidates/TeamHeatmap";
 import JobManager from "./components/dashboard/JobManager";
-import APIExplorer from "./components/dashboard/APIExplorer";
 import { PipelineStory } from "./components/dashboard/PipelineStory";
+import ATSBoard from "./components/dashboard/ATSBoard";
+import { CandidateTable } from "./components/candidates/CandidateTable";
 
 
 function formatApiError(detail: unknown, maxLen = 160): string {
@@ -94,8 +99,41 @@ export default function Dashboard() {
   const [teamSkills, setTeamSkills] = useState<string[]>([]);
   const [team, setTeam] = useState<any[]>([]);
   const [selectedBenchmark, setSelectedBenchmark] = useState("YC_FOUNDING_ENGINEER");
-  const [currentView, setCurrentView] = useState<"recruiter" | "admin" | "api">("recruiter");
+  const [currentView, setCurrentView] = useState<"recruiter" | "admin" | "ats">("recruiter");
   const [activeUploadSession, setActiveUploadSession] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<"card" | "table">("card");
+
+  const handleDownloadCSV = () => {
+    if (candidates.length === 0) {
+      alert("No candidates to download");
+      return;
+    }
+
+    const headers = ["Rank", "Name", "Role", "Previous Companies", "Core Skills", "Education"];
+    const csvRows = [headers.join(",")];
+
+    candidates.forEach((cand, index) => {
+      const rank = cand.rank || index + 1;
+      const name = `"${cand.name.replace(/"/g, '""')}"`;
+      const role = `"${(cand.career_history?.[0]?.title || "Software Engineer").replace(/"/g, '""')}"`;
+      const companies = `"${(cand.career_history?.map((j: any) => j.company).join("; ") || "").replace(/"/g, '""')}"`;
+      const skills = `"${(cand.skills?.join(", ") || "").replace(/"/g, '""')}"`;
+      const education = `"${(cand.education?.map((e: any) => e.school).join("; ") || "").replace(/"/g, '""')}"`;
+
+      csvRows.push([rank, name, role, companies, skills, education].join(","));
+    });
+
+    const csvContent = csvRows.join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", "talent_rank_candidates.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
   
   // JWT Authentication States
   const [token, setToken] = useState<string | null>(null);
@@ -195,7 +233,7 @@ export default function Dashboard() {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = (message?: string) => {
     localStorage.removeItem("token");
     localStorage.removeItem("username");
     localStorage.removeItem("role");
@@ -208,6 +246,16 @@ export default function Dashboard() {
     setRankingAnalytics(null);
     setOverriddenCandidateIds(new Set());
     setSystemStatus(null);
+    setUploadLoading(false);
+    setActiveUploadSession(null);
+    setLoginError(message || "");
+  };
+
+  const getAuthErrorMessage = (detail: unknown): string => {
+    const message = formatApiError(detail, 160);
+    return message.toLowerCase().includes("expired")
+      ? "Your session has expired. Please sign in again to ingest resumes."
+      : message;
   };
 
   const fetchAuditLogs = async () => {
@@ -365,7 +413,18 @@ export default function Dashboard() {
       setUsername(savedUser);
       setRole(savedRole);
       setTimeout(() => {
-        fetchInitialData();
+        fetch(`${getAPIUrl()}/api/auth/me`, {
+          headers: { "Authorization": `Bearer ${savedToken}` }
+        }).then(async (res) => {
+          if (res.ok) {
+            fetchInitialData();
+            return;
+          }
+          const err = await res.json().catch(() => ({ detail: "Session expired" }));
+          handleLogout(getAuthErrorMessage(err.detail));
+        }).catch(() => {
+          handleLogout("Could not validate your session. Please sign in again.");
+        });
       }, 50);
     }
   }, []);
@@ -438,11 +497,18 @@ export default function Dashboard() {
     });
     
     try {
+      const headers = getAuthHeaders();
+      if (!headers.Authorization) {
+        handleLogout("Please sign in as a Recruiter or Admin to ingest resumes.");
+        return;
+      }
+
       const res = await fetch(`${getAPIUrl()}/api/candidates/upload-batch?session_id=${sess}`, {
         method: "POST",
-        headers: getAuthHeaders(),
+        headers: headers,
         body: formData
       });
+
       if (res.ok) {
         const data = await res.json();
         setBatchResults(data.results);
@@ -457,8 +523,18 @@ export default function Dashboard() {
         fetchData();
         fetchInitialData();
       } else {
-        const errObj = await res.json().catch(() => ({ detail: "Ingestion failed" }));
-        setUploadError(formatApiError(errObj.detail, 120));
+        const errorText = await res.text();
+        console.error("Upload error response:", errorText);
+        let errDetail = "Ingestion failed";
+        try {
+          const errObj = JSON.parse(errorText);
+          errDetail = errObj.detail || errDetail;
+        } catch { /* not JSON */ }
+        if (res.status === 401) {
+          handleLogout(getAuthErrorMessage(errDetail));
+          return;
+        }
+        setUploadError(formatApiError(errDetail, 120));
         setActiveUploadSession(null);
       }
     } catch (err) {
@@ -703,7 +779,7 @@ export default function Dashboard() {
             <div className="bg-indigo-600/10 p-3 rounded-full text-indigo-400 inline-block">
               <Cpu className="h-8 w-8" />
             </div>
-            <h2 className="text-2xl font-bold text-white tracking-tight">Antigravity AI Recruiter</h2>
+            <h2 className="text-2xl font-bold text-white tracking-tight">Talent Rank AI Recruiter</h2>
             <p className="text-xs text-slate-400">Complete Security Hardening Active</p>
           </div>
           
@@ -821,7 +897,7 @@ export default function Dashboard() {
           </div>
           <div>
             <h1 className="text-xl font-bold tracking-tight text-white flex items-center gap-2">
-              Antigravity <span className="text-xs bg-indigo-500/20 text-indigo-400 px-2 py-0.5 rounded-full border border-indigo-500/30">AI Architect</span>
+              Talent Rank <span className="text-xs bg-indigo-500/20 text-indigo-400 px-2 py-0.5 rounded-full border border-indigo-500/30">AI Architect</span>
             </h1>
             <p className="text-xs text-slate-400">Candidate Intelligence & Decision Platform</p>
           </div>
@@ -915,7 +991,7 @@ export default function Dashboard() {
               {role}
             </span>
             <button
-              onClick={handleLogout}
+              onClick={() => handleLogout()}
               className="text-slate-400 hover:text-rose-400 ml-2 font-semibold transition-colors"
             >
               Logout
@@ -952,8 +1028,8 @@ export default function Dashboard() {
         <div className="flex items-center gap-1 overflow-x-auto hide-scrollbar">
           {[
             { id: "recruiter" as const, label: "Recruiter Dashboard", icon: <LayoutDashboard className="h-3.5 w-3.5" /> },
+            { id: "ats" as const, label: "ATS Tracker", icon: <ClipboardList className="h-3.5 w-3.5" /> },
             { id: "admin" as const, label: "Job Management", icon: <Briefcase className="h-3.5 w-3.5" /> },
-            { id: "api" as const, label: "API Explorer", icon: <Terminal className="h-3.5 w-3.5" /> },
           ].map((tab) => (
             <button
               key={tab.id}
@@ -973,13 +1049,6 @@ export default function Dashboard() {
 
       {/* --- CONDITIONAL VIEW RENDERING --- */}
 
-      {/* API EXPLORER VIEW */}
-      {currentView === "api" && (
-        <div className="flex-1 overflow-y-auto">
-          <APIExplorer token={token} getAPIUrl={getAPIUrl} />
-        </div>
-      )}
-
       {/* JOB MANAGEMENT VIEW */}
       {currentView === "admin" && (
         <div className="flex-1 overflow-y-auto">
@@ -989,6 +1058,18 @@ export default function Dashboard() {
             getAPIUrl={getAPIUrl}
             onActiveJobChanged={(jobId: number) => setSelectedJobId(jobId)}
             selectedJobId={selectedJobId}
+          />
+        </div>
+      )}
+
+      {/* ATS PIPELINE TRACKER VIEW */}
+      {currentView === "ats" && (
+        <div className="flex-1 overflow-y-auto p-6">
+          <ATSBoard
+            token={token}
+            selectedJobId={selectedJobId}
+            candidates={candidates.map((c: any) => ({ id: c.id, name: c.name, email: c.email }))}
+            getAPIUrl={getAPIUrl}
           />
         </div>
       )}
@@ -1235,7 +1316,7 @@ export default function Dashboard() {
                   <button
                     type="submit"
                     disabled={uploadLoading}
-                    className="w-full bg-indigo-600 hover:bg-indigo-500 py-2.5 rounded-xl text-xs font-bold text-white transition-all active:scale-95 flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/10 disabled:opacity-50"
+                    className="w-full bg-indigo-600 hover:bg-indigo-500 py-2.5 rounded-xl text-xs font-bold text-white transition-all active:scale-95 flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/10 disabled:opacity-50 disabled:cursor-not-allowed disabled:animate-none"
                   >
                     {uploadLoading ? (
                       <><RefreshCw className="h-3.5 w-3.5 animate-spin" /> Processing {uploadFiles.length} resume{uploadFiles.length > 1 ? 's' : ''}...</>
@@ -1414,6 +1495,35 @@ export default function Dashboard() {
                   <RefreshCw className="h-3 w-3 animate-spin" /> Recalculating...
                 </span>
               )}
+
+              {/* View Toggles & CSV Export */}
+              <div className="flex items-center gap-2 ml-2">
+                <div className="flex bg-[#1b1b2a] rounded-lg p-0.5 border border-[#242435]">
+                  <button
+                    onClick={() => setViewMode("table")}
+                    className={`p-1.5 rounded-md transition-colors ${viewMode === "table" ? "bg-[#2a2a3f] text-indigo-400 shadow-sm" : "text-slate-500 hover:text-slate-300"}`}
+                    title="Table View"
+                  >
+                    <List className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    onClick={() => setViewMode("card")}
+                    className={`p-1.5 rounded-md transition-colors ${viewMode === "card" ? "bg-[#2a2a3f] text-indigo-400 shadow-sm" : "text-slate-500 hover:text-slate-300"}`}
+                    title="Card View"
+                  >
+                    <LayoutGrid className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                {candidates.length > 0 && (
+                  <button 
+                    onClick={handleDownloadCSV}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-emerald-500/50 bg-emerald-600/10 hover:bg-emerald-600/20 text-[10px] font-bold text-emerald-400 transition-colors uppercase tracking-wider active:scale-95"
+                  >
+                    <Download className="h-3 w-3" />
+                    CSV
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
@@ -1446,6 +1556,12 @@ export default function Dashboard() {
                   Trigger a database seed by clicking the &quot;Reset &amp; Seed Data&quot; button or add candidate records using the backend endpoint.
                 </p>
               </div>
+            ) : viewMode === "table" ? (
+              <CandidateTable 
+                candidates={candidates}
+                selectedCandidateId={selectedCandidate?.id}
+                onSelectCandidate={selectCandidateForDetail}
+              />
             ) : (
               <>
               {candidates.map((cand) => {

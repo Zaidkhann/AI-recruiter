@@ -91,3 +91,18 @@ class AuditLog(Base):
 
     user = relationship("User", foreign_keys=[user_id])
 
+class ATSRecord(Base):
+    __tablename__ = "ats_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    candidate_id = Column(Integer, ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False, index=True)
+    job_id = Column(Integer, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    stage = Column(String, default="applied", nullable=False, index=True)  # applied, screening, interview, offer, hired, rejected
+    notes = Column(Text, nullable=True)
+    updated_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+    candidate = relationship("Candidate", foreign_keys=[candidate_id])
+    job = relationship("Job", foreign_keys=[job_id])
+

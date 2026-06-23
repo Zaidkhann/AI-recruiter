@@ -12,7 +12,7 @@ def seed_data():
     Base.metadata.create_all(bind=engine)
 
     # Initialize Qdrant collection
-    qdrant_manager.init_collection(vector_size=768)
+    qdrant_manager.init_collection()
 
     print("Seeding default users...")
     from app.core.auth import get_password_hash

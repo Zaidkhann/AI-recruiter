@@ -37,12 +37,14 @@ export interface Candidate {
   status?: CandidateStatus;
   reason?: string[];
   missing_required_skills?: string[];
+  resume_text?: string;
   resume_preview?: string;
   direct_match_ratio?: number;
   semantic_score_raw?: number;
   phone?: string;
   location?: string;
   education?: Education[];
+  career_history?: CareerHistory[];
   github_url?: string;
   linkedin_url?: string;
   portfolio_url?: string;
@@ -56,6 +58,15 @@ export interface Candidate {
   linkedin_intelligence?: LinkedInIntelligence;
   benchmark_data?: BenchmarkData;
   ranking_audit?: RankingAudit;
+}
+
+export interface CareerHistory {
+  company: string;
+  title: string;
+  start_date?: string;
+  end_date?: string;
+  description?: string;
+  level?: string;
 }
 
 export interface RankingFactors {

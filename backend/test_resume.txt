@@ -1,0 +1,19 @@
+John Doe
+Email: john.doe@example.com
+Phone: +1-555-987-6543
+Location: Seattle, WA
+
+Skills: Python, FastAPI, Docker, GCP, React, TypeScript
+
+Experience:
+Senior Software Engineer at Amazon (Jan 2022 - Present)
+- Designed and built scalable cloud services using Python and FastAPI.
+- Implemented frontend dashboard using React and TypeScript.
+- Deployed applications on AWS using Docker and ECS.
+
+Software Engineer at Microsoft (Jun 2019 - Dec 2021)
+- Developed backend microservices in Python.
+- Built automated tests and CI/CD pipelines.
+
+Education:
+B.S. in Computer Science from University of Washington (Graduated 2019)

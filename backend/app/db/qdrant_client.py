@@ -2,6 +2,7 @@ import logging
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 from app.core.config import settings
+from app.services.llm_service import EMBEDDING_DIM
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +144,7 @@ class QdrantManager:
         logger.warning(f"Qdrant unreachable. Using local vector search: {vector_status['type']}")
         return False
 
-    def init_collection(self, vector_size: int = 768):
+    def init_collection(self, vector_size: int = EMBEDDING_DIM):
         if self.ping():
             try:
                 collections = self.client.get_collections().collections
@@ -212,7 +213,7 @@ class QdrantManager:
         
         return self._local_index.search(query_vector, limit=limit)
 
-    def clear_all_candidates(self, vector_size: int = 768):
+    def clear_all_candidates(self, vector_size: int = EMBEDDING_DIM):
         """Remove every candidate embedding from Qdrant and the local fallback index."""
         self._local_index = LocalVectorIndex()
         if self._use_fallback:

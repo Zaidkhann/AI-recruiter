@@ -79,6 +79,51 @@ def test_llm_fallbacks():
     assert len(card["suggested_interview_questions"]) > 0
     assert card["personalized_outreach_email"].startswith("Subject:")
 
+
+def test_skill_parser_does_not_match_go_inside_words():
+    from app.services.llm_service import _clean_parsed_skills, _extract_known_skills
+
+    resume = "Studied at Government College, built tools for google workflows, and has good communication."
+
+    assert "Go" not in _extract_known_skills(resume)
+    assert _clean_parsed_skills(["Go", "Python"], resume) == ["Python"]
+
+
+def test_skill_parser_matches_real_go_evidence():
+    from app.services.llm_service import _extract_known_skills
+
+    assert "Go" in _extract_known_skills("Backend engineer using Go, Docker, and Redis.")
+    assert "Go" in _extract_known_skills("Backend engineer using Golang services.")
+
+
+def test_resume_parsing_requires_ai_parser(monkeypatch):
+    from app.core.config import settings
+    from app.services.llm_service import AIResumeParsingError, llm_service
+
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "")
+
+    with pytest.raises(AIResumeParsingError):
+        llm_service.parse_resume("Python engineer with FastAPI experience.")
+
+
+def test_go_prerequisite_does_not_score_inside_unrelated_words():
+    from app.db.models import Candidate
+    from app.services.ranking_engine import ranking_engine
+
+    false_positive = Candidate(
+        name="No Go Candidate",
+        skills=[],
+        resume_text="Studied at Government College, improved google workflows, and has good communication.",
+    )
+    actual_go = Candidate(
+        name="Go Candidate",
+        skills=[],
+        resume_text="Built backend services in Go with Redis.",
+    )
+
+    assert ranking_engine._calculate_requirement_compliance(false_positive, [], ["Go"]) == 0.0
+    assert ranking_engine._calculate_requirement_compliance(actual_go, [], ["Go"]) == 0.6
+
 def test_linkedin_intelligence():
     from app.services.linkedin_intelligence import linkedin_intelligence_engine
     career = [
@@ -195,5 +240,3 @@ def test_ranking_engine_deep_job_understanding():
     hidden_reqs = ["Fast-paced execution", "Testing standards"]
     hidden_score = ranking_engine._calculate_hidden_fit(candidate, hidden_reqs)
     assert hidden_score > 0.5
-
-

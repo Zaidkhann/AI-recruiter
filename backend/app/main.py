@@ -7,7 +7,7 @@ from app.db.qdrant_client import qdrant_manager, vector_status
 from app.db.redis_client import redis_manager, cache_status
 from app.services.llm_service import llm_status
 from app.db.models import Candidate, Job, GraphNode, GraphEdge, AuditLog
-from app.api import jobs, candidates, rank, copilot, team, auth, audit, intelligence
+from app.api import jobs, candidates, rank, copilot, team, auth, audit, intelligence, ats
 from app.db.seed import seed_data
 from app.core.rate_limit import RateLimitMiddleware
 from app.core.security_headers import SecurityHeadersMiddleware
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Candidate Intelligence & Ranking API",
+    title="Talent Rank — Candidate Intelligence & Ranking API",
     description="Enterprise AI recruiter using twin graphs and resilient multi-stage evaluation pipelines.",
     version="1.0.0"
 )
@@ -100,6 +100,7 @@ app.include_router(rank.router)
 app.include_router(copilot.router)
 app.include_router(team.router)
 app.include_router(intelligence.router)
+app.include_router(ats.router)
 
 @app.get("/health")
 def legacy_health_check():
