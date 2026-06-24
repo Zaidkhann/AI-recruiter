@@ -1,3 +1,4 @@
+import os
 import logging
 from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -59,11 +60,14 @@ def startup_event():
         candidates_count = db.query(Candidate).count()
         jobs_count = db.query(Job).count()
         if candidates_count == 0:
-            logger.info("No candidates found in database. Running auto-seeding...")
-            seed_data()
-            candidates_count = db.query(Candidate).count()
-            jobs_count = db.query(Job).count()
-            logger.info("Automatic database seeding completed.")
+            if os.getenv("RENDER"):
+                logger.info("Database empty. Skipping auto-seeding on Render.")
+            else:
+                logger.info("No candidates found in database. Running auto-seeding...")
+                seed_data()
+                candidates_count = db.query(Candidate).count()
+                jobs_count = db.query(Job).count()
+                logger.info("Automatic database seeding completed.")
     except Exception as e:
         logger.error(f"Error during auto-seeding check: {e}")
     finally:
