@@ -121,9 +121,13 @@ class QdrantManager:
     @property
     def client(self) -> QdrantClient:
         if self._client is None:
+            # If an API key is provided, we assume it's a managed cloud instance that requires HTTPS
+            use_https = bool(settings.QDRANT_API_KEY) or "cloud.qdrant.io" in settings.QDRANT_HOST
             self._client = QdrantClient(
                 host=settings.QDRANT_HOST,
-                port=settings.QDRANT_PORT
+                port=settings.QDRANT_PORT,
+                api_key=settings.QDRANT_API_KEY if settings.QDRANT_API_KEY else None,
+                https=use_https
             )
         return self._client
 
