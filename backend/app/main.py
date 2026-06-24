@@ -227,4 +227,3 @@ def trigger_db_seeding(
         )
         return {"status": "error", "message": str(e)}
 
-
