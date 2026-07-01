@@ -52,14 +52,12 @@ interface RediscoveredCandidate {
 }
 
 interface JobManagerProps {
-  token: string | null;
-  role: string;
   getAPIUrl: () => string;
   onActiveJobChanged: (jobId: number) => void;
   selectedJobId: number | null;
 }
 
-export default function JobManager({ token, role, getAPIUrl, onActiveJobChanged, selectedJobId }: JobManagerProps) {
+export default function JobManager({ getAPIUrl, onActiveJobChanged, selectedJobId }: JobManagerProps) {
   const [jobs, setJobs] = useState<JobInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -88,16 +86,15 @@ export default function JobManager({ token, role, getAPIUrl, onActiveJobChanged,
   // View Deep Understanding state
   const [expandedJobId, setExpandedJobId] = useState<number | null>(null);
 
-  const isReadOnly = role === "viewer";
+  const isReadOnly = false;
 
   const fetchJobsAndStats = async () => {
     setLoading(true);
     setLoadingStats(true);
-    const headers: HeadersInit = token ? { "Authorization": `Bearer ${token}` } : {};
 
     try {
       // 1. Fetch jobs
-      const jobsRes = await fetch(`${getAPIUrl()}/api/jobs`, { headers });
+      const jobsRes = await fetch(`${getAPIUrl()}/api/jobs`);
       if (jobsRes.ok) {
         const jobsData = await jobsRes.json();
         setJobs(jobsData);
@@ -121,7 +118,7 @@ export default function JobManager({ token, role, getAPIUrl, onActiveJobChanged,
 
   useEffect(() => {
     fetchJobsAndStats();
-  }, [token]);
+  }, []);
 
   const handleCreateJob = () => {
     if (isReadOnly) return;
@@ -164,14 +161,10 @@ export default function JobManager({ token, role, getAPIUrl, onActiveJobChanged,
       return;
     }
     setAiSuggesting(true);
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (token) {
-      headers["Authorization"] = `Bearer ${token}`;
-    }
     try {
       const res = await fetch(`${getAPIUrl()}/api/jobs/suggest-skills`, {
         method: "POST",
-        headers,
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: formTitle, description: formDesc })
       });
       if (res.ok) {
@@ -199,9 +192,6 @@ export default function JobManager({ token, role, getAPIUrl, onActiveJobChanged,
     const headers: Record<string, string> = {
       "Content-Type": "application/json"
     };
-    if (token) {
-      headers["Authorization"] = `Bearer ${token}`;
-    }
 
     const payload = {
       title: formTitle,
@@ -230,7 +220,13 @@ export default function JobManager({ token, role, getAPIUrl, onActiveJobChanged,
         fetchJobsAndStats();
       } else {
         const errData = await res.json().catch(() => ({}));
-        setError(errData.detail || "Error saving job description.");
+        let errMsg = errData.detail || "Error saving job description.";
+        if (Array.isArray(errMsg)) {
+          errMsg = errMsg.map((e: any) => `${e.loc?.slice(-1)}: ${e.msg}`).join(", ");
+        } else if (typeof errMsg === "object") {
+          errMsg = JSON.stringify(errMsg);
+        }
+        setError(errMsg);
       }
     } catch (err: any) {
       setError(err.message || "Failed to submit request.");
@@ -241,12 +237,10 @@ export default function JobManager({ token, role, getAPIUrl, onActiveJobChanged,
 
   const handleDeleteJob = async (jobId: number) => {
     if (isReadOnly || !confirm("Are you sure you want to permanently delete this job?")) return;
-    const headers: HeadersInit = token ? { "Authorization": `Bearer ${token}` } : {};
 
     try {
       const res = await fetch(`${getAPIUrl()}/api/jobs/${jobId}`, {
         method: "DELETE",
-        headers
       });
       if (res.ok) {
         fetchJobsAndStats();
@@ -260,15 +254,11 @@ export default function JobManager({ token, role, getAPIUrl, onActiveJobChanged,
 
   const handleUpdateStatus = async (jobId: number, status: "active" | "archived" | "closed") => {
     if (isReadOnly) return;
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (token) {
-      headers["Authorization"] = `Bearer ${token}`;
-    }
 
     try {
       const res = await fetch(`${getAPIUrl()}/api/jobs/${jobId}/status`, {
         method: "PUT",
-        headers,
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status })
       });
       if (res.ok) {
@@ -281,12 +271,10 @@ export default function JobManager({ token, role, getAPIUrl, onActiveJobChanged,
 
   const handleCloneJob = async (jobId: number) => {
     if (isReadOnly) return;
-    const headers: HeadersInit = token ? { "Authorization": `Bearer ${token}` } : {};
 
     try {
       const res = await fetch(`${getAPIUrl()}/api/jobs/${jobId}/clone`, {
         method: "POST",
-        headers
       });
       if (res.ok) {
         fetchJobsAndStats();
@@ -298,12 +286,10 @@ export default function JobManager({ token, role, getAPIUrl, onActiveJobChanged,
 
   const handleRediscoverTalent = async (jobId: number) => {
     setScanLoading(jobId);
-    const headers: HeadersInit = token ? { "Authorization": `Bearer ${token}` } : {};
 
     try {
       const res = await fetch(`${getAPIUrl()}/api/jobs/${jobId}/rediscover-talent`, {
         method: "POST",
-        headers
       });
       if (res.ok) {
         const data = await res.json();

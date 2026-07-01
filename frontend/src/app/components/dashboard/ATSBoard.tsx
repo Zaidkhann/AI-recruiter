@@ -64,7 +64,6 @@ interface ATSScoreResult {
 }
 
 interface Props {
-  token: string | null;
   selectedJobId: number | null;
   candidates: { id: number; name: string; email: string }[];
   getAPIUrl: () => string;
@@ -144,7 +143,7 @@ function VerdictBadge({ verdict, color }: { verdict: string; color: string }) {
   );
 }
 
-export default function ATSBoard({ token, selectedJobId, candidates, getAPIUrl }: Props) {
+export default function ATSBoard({ selectedJobId, candidates, getAPIUrl }: Props) {
   const [records, setRecords] = useState<ATSRecord[]>([]);
   const [summary, setSummary] = useState<ATSSummary | null>(null);
   const [loading, setLoading] = useState(false);
@@ -161,18 +160,13 @@ export default function ATSBoard({ token, selectedJobId, candidates, getAPIUrl }
   const [showScanner, setShowScanner] = useState(false);
   const [batchScanning, setBatchScanning] = useState(false);
 
-  const getAuthHeaders = (): Record<string, string> => {
-    const savedToken = token || (typeof window !== "undefined" ? localStorage.getItem("token") : null);
-    return savedToken ? { Authorization: `Bearer ${savedToken}` } : {};
-  };
-
   const fetchATS = useCallback(async () => {
     setLoading(true);
     try {
       const jobQuery = selectedJobId !== null ? `?job_id=${selectedJobId}` : "";
       const [recordsRes, summaryRes] = await Promise.all([
-        fetch(`${getAPIUrl()}/api/ats${jobQuery}`, { headers: getAuthHeaders() }),
-        fetch(`${getAPIUrl()}/api/ats/summary${jobQuery}`, { headers: getAuthHeaders() }),
+        fetch(`${getAPIUrl()}/api/ats${jobQuery}`),
+        fetch(`${getAPIUrl()}/api/ats/summary${jobQuery}`),
       ]);
       if (recordsRes.ok) setRecords(await recordsRes.json());
       if (summaryRes.ok) setSummary(await summaryRes.json());
@@ -181,18 +175,18 @@ export default function ATSBoard({ token, selectedJobId, candidates, getAPIUrl }
     } finally {
       setLoading(false);
     }
-  }, [token, selectedJobId]);
+  }, [selectedJobId, getAPIUrl]);
 
   useEffect(() => {
-    if (token) fetchATS();
-  }, [token, selectedJobId, fetchATS]);
+    fetchATS();
+  }, [selectedJobId, fetchATS]);
 
   const moveToStage = async (recordId: number, newStage: string) => {
     setMovingId(recordId);
     try {
       const res = await fetch(`${getAPIUrl()}/api/ats/${recordId}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ stage: newStage }),
       });
       if (res.ok) await fetchATS();
@@ -209,7 +203,7 @@ export default function ATSBoard({ token, selectedJobId, candidates, getAPIUrl }
     try {
       const res = await fetch(`${getAPIUrl()}/api/ats`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           candidate_id: addCandidateId,
           job_id: selectedJobId,
@@ -245,7 +239,6 @@ export default function ATSBoard({ token, selectedJobId, candidates, getAPIUrl }
     try {
       const res = await fetch(
         `${getAPIUrl()}/api/ats/score/${candidateId}/${selectedJobId}`,
-        { headers: getAuthHeaders() }
       );
       if (res.ok) {
         const data: ATSScoreResult = await res.json();
@@ -269,7 +262,6 @@ export default function ATSBoard({ token, selectedJobId, candidates, getAPIUrl }
       try {
         const res = await fetch(
           `${getAPIUrl()}/api/ats/score/${cid}/${selectedJobId}`,
-          { headers: getAuthHeaders() }
         );
         if (res.ok) {
           const data: ATSScoreResult = await res.json();

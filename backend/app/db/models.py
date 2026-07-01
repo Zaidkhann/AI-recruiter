@@ -38,6 +38,7 @@ class Candidate(Base):
     ranking_explanations = Column(JSON, nullable=True)  # Cache for re-ranking summaries, risk cards, etc.
     linkedin_intelligence = Column(JSON, nullable=True)  # LinkedIn Intelligence Engine scores
     benchmark_data = Column(JSON, nullable=True)  # Benchmark percentile data
+    redrob_signals = Column(JSON, nullable=True)  # Redrob candidate intelligence signals
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 class TeamMember(Base):

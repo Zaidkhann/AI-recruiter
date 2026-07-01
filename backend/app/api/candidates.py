@@ -23,7 +23,7 @@ router = APIRouter(prefix="/api/candidates", tags=["Candidates"])
 
 def _resolve_candidate_email(parsed: dict, resume_text: str, filename: str) -> str:
     """Always return a usable email — never block ingestion when parsing misses one."""
-    email = (parsed.get("email") or "").strip()
+    email = str(parsed.get("email") or "").strip()
     if email:
         return email
     email_match = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", resume_text or "")
@@ -48,6 +48,7 @@ def _populate_candidate_fields(
     linkedin_intel: dict,
     phone: str | None,
     location: str | None,
+    redrob_signals: dict | None = None,
 ) -> None:
     cand.name = name
     cand.email = email
@@ -55,11 +56,11 @@ def _populate_candidate_fields(
     cand.skills = skills
     cand.github_username = github_username
     cand.github_stats = github_stats
-    cand.career_history = parsed.get("career_history", [])
-    cand.certifications = parsed.get("certifications", [])
+    cand.career_history = parsed.get("career_history") or []
+    cand.certifications = parsed.get("certifications") or []
     cand.phone = phone
     cand.location = location
-    cand.education = parsed.get("education", [])
+    cand.education = parsed.get("education") or []
     cand.github_url = parsed.get("github_url")
     cand.linkedin_url = parsed.get("linkedin_url")
     cand.portfolio_url = parsed.get("portfolio_url")
@@ -67,6 +68,7 @@ def _populate_candidate_fields(
     cand.twitter_x = parsed.get("twitter_x")
     cand.behavioral_profile = behavioral_profile
     cand.linkedin_intelligence = linkedin_intel
+    cand.redrob_signals = redrob_signals
     cand.ranking_explanations = None
     cand.benchmark_data = None
 
@@ -140,9 +142,9 @@ async def upload_candidate(
         )
         pipeline_events_service.emit_stage(session_id, "ai_parsing", status="processing")
     
-    # 1. Read file contents and validate file size (< 5MB)
+    # 1. Read file contents and validate file size (< 600MB)
     contents = await file.read()
-    MAX_FILE_SIZE = 5 * 1024 * 1024
+    MAX_FILE_SIZE = 600 * 1024 * 1024
     if len(contents) > MAX_FILE_SIZE:
         log_audit_event(
             db=db,
@@ -150,17 +152,17 @@ async def upload_candidate(
             username=current_user.username,
             user_id=current_user.id,
             ip_address=client_ip,
-            details={"filename": file.filename, "reason": "File size exceeds 5MB limit"}
+            details={"filename": file.filename, "reason": "File size exceeds 600MB limit"}
         )
         if session_id:
-            pipeline_events_service.emit_stage(session_id, "resume_uploaded", status="error", details={"reason": "File size exceeds 5MB limit"})
-        raise HTTPException(status_code=400, detail="File size exceeds the 5MB limit.")
+            pipeline_events_service.emit_stage(session_id, "resume_uploaded", status="error", details={"reason": "File size exceeds 600MB limit"})
+        raise HTTPException(status_code=400, detail="File size exceeds the 600MB limit.")
 
     filename = file.filename or ""
     extension = filename.split(".")[-1].lower() if "." in filename else ""
     content_type = file.content_type or ""
 
-    allowed_extensions = {"pdf", "docx", "txt"}
+    allowed_extensions = {"pdf", "docx", "txt", "json", "jsonl"}
 
     # Validate by extension only — browsers often send application/octet-stream for PDFs
     if extension not in allowed_extensions:
@@ -174,7 +176,7 @@ async def upload_candidate(
         )
         if session_id:
             pipeline_events_service.emit_stage(session_id, "resume_uploaded", status="error", details={"reason": "Invalid file type"})
-        raise HTTPException(status_code=400, detail="Invalid file type. Only PDF, DOCX, and TXT files are allowed.")
+        raise HTTPException(status_code=400, detail="Invalid file type. Only PDF, DOCX, TXT, JSON, and JSONL files are allowed.")
 
     # 3. Validate Magic Numbers / File Headers
     magic = contents[:4]
@@ -261,9 +263,37 @@ async def upload_candidate(
         raise e
 
     t_extracted = time.time()
-    # Send text to AI resume parser
+    # Send text to AI resume parser or parse JSON directly
     try:
-        parsed = llm_service.parse_resume(text)
+        if extension in ("json", "jsonl"):
+            import json
+            try:
+                parsed_json = json.loads(text)
+                if isinstance(parsed_json, list) and len(parsed_json) > 0:
+                    parsed_json = parsed_json[0]
+                if isinstance(parsed_json, dict):
+                    if "profile" in parsed_json and "anonymized_name" in parsed_json["profile"]:
+                        prof = parsed_json["profile"]
+                        parsed = {
+                            "name": str(prof.get("anonymized_name", "Unknown")),
+                            "email": f"{str(prof.get('anonymized_name', 'unknown')).replace(' ', '.').lower()}@example.com",
+                            "location": str(prof.get("location", "")) if prof.get("location") else None,
+                            "skills": parsed_json.get("skills", []),
+                            "career_history": parsed_json.get("career_history", []),
+                            "education": parsed_json.get("education", [])
+                        }
+                    elif "name" in parsed_json:
+                        parsed = parsed_json
+                    else:
+                        parsed = parsed_json
+                        if "name" not in parsed:
+                            parsed["name"] = parsed.get("candidate_name", "Unknown Candidate")
+                else:
+                    parsed = {"name": "Unknown Candidate", "skills": [], "career_history": [], "education": []}
+            except Exception:
+                parsed = {"name": "Unknown Candidate", "skills": [], "career_history": [], "education": []}
+        else:
+            parsed = llm_service.parse_resume(text)
     except AIResumeParsingError as e:
         log_audit_event(
             db=db,
@@ -294,7 +324,20 @@ async def upload_candidate(
 
     email = _resolve_candidate_email(parsed, text, filename)
 
-    skills = parsed.get("skills", [])
+    skills = parsed.get("skills") or []
+    if not isinstance(skills, list):
+        skills = [skills]
+    
+    cleaned_skills = []
+    for s in skills:
+        if isinstance(s, dict) and "name" in s:
+            cleaned_skills.append(str(s["name"]))
+        elif isinstance(s, str):
+            cleaned_skills.append(s)
+        elif s:
+            cleaned_skills.append(str(s))
+    skills = cleaned_skills
+    
     if session_id:
         pipeline_events_service.emit_stage(
             session_id, 
@@ -331,10 +374,10 @@ async def upload_candidate(
     t_li_start = time.time()
     # Run LinkedIn intelligence analysis on candidate data
     linkedin_intel = linkedin_intelligence_engine.analyze(
-        career_history=parsed.get("career_history", []),
-        skills=parsed.get("skills", []),
-        certifications=parsed.get("certifications", []),
-        education=parsed.get("education", []),
+        career_history=parsed.get("career_history") or [],
+        skills=skills,
+        certifications=parsed.get("certifications") or [],
+        education=parsed.get("education") or [],
         github_stats=github_stats,
         behavioral_profile=behavioral_profile
     )
@@ -367,10 +410,18 @@ async def upload_candidate(
         )
 
     # Sanitize parsed text values before inserting into database (XSS prevention)
-    name_cleaned = parsed.get("name", "Unknown Candidate").replace("<", "&lt;").replace(">", "&gt;").strip()
-    email_cleaned = email.replace("<", "&lt;").replace(">", "&gt;").strip()
-    phone_cleaned = parsed.get("phone", "").replace("<", "&lt;").replace(">", "&gt;").strip() if parsed.get("phone") else None
-    loc_cleaned = parsed.get("location", "").replace("<", "&lt;").replace(">", "&gt;").strip() if parsed.get("location") else None
+    raw_name = parsed.get("name")
+    if not raw_name:
+        raw_name = "Unknown Candidate"
+    name_cleaned = str(raw_name).replace("<", "&lt;").replace(">", "&gt;").strip()
+    
+    email_cleaned = str(email).replace("<", "&lt;").replace(">", "&gt;").strip()
+    
+    raw_phone = parsed.get("phone")
+    phone_cleaned = str(raw_phone).replace("<", "&lt;").replace(">", "&gt;").strip() if raw_phone else None
+    
+    raw_loc = parsed.get("location")
+    loc_cleaned = str(raw_loc).replace("<", "&lt;").replace(">", "&gt;").strip() if raw_loc else None
 
     # Update existing candidate when email already in DB, otherwise create new
     existing = db.query(Candidate).filter(Candidate.email == email_cleaned).order_by(Candidate.id.desc()).first()
@@ -389,6 +440,7 @@ async def upload_candidate(
         linkedin_intel=linkedin_intel,
         phone=phone_cleaned,
         location=loc_cleaned,
+        redrob_signals=parsed.get("redrob_signals"),
     )
     if not is_update:
         db.add(cand)
@@ -414,6 +466,7 @@ async def upload_candidate(
             linkedin_intel=linkedin_intel,
             phone=phone_cleaned,
             location=loc_cleaned,
+            redrob_signals=parsed.get("redrob_signals"),
         )
         db.flush()
 
@@ -422,7 +475,8 @@ async def upload_candidate(
 
     t_emb_start = time.time()
     # Create and upsert vector in Qdrant/FAISS fallback
-    embedding_text = f"{cand.name} {cand.resume_text} {' '.join(cand.skills)}"
+    safe_skills = cand.skills if cand.skills else []
+    embedding_text = f"{cand.name} {cand.resume_text} {' '.join(safe_skills)}"
     vector = llm_service.get_embedding(embedding_text)
     
     payload = {
@@ -476,20 +530,23 @@ async def upload_candidates_batch(
 ):
     """Upload multiple resume files in a single batch request.
     Returns a list of results, one per file, with status and details."""
+    import json
+    import io
+    from starlette.datastructures import UploadFile as StarletteUploadFile
+    
     results = []
-    for idx, file in enumerate(files):
-        file_session = f"{session_id}_file{idx}" if session_id else None
+    
+    async def process_single_file(f, f_sess, display_name):
         try:
-            # Re-use the single upload endpoint logic
             cand = await upload_candidate(
                 request=request,
-                file=file,
-                session_id=file_session,
+                file=f,
+                session_id=f_sess,
                 db=db,
                 current_user=current_user
             )
             results.append({
-                "filename": file.filename,
+                "filename": display_name,
                 "status": "success",
                 "candidate_id": cand.id,
                 "name": cand.name,
@@ -498,17 +555,59 @@ async def upload_candidates_batch(
         except HTTPException as e:
             db.rollback()
             results.append({
-                "filename": file.filename,
+                "filename": display_name,
                 "status": "error",
                 "detail": e.detail if isinstance(e.detail, str) else str(e.detail),
             })
         except Exception as e:
             db.rollback()
             results.append({
-                "filename": file.filename,
+                "filename": display_name,
                 "status": "error",
                 "detail": str(e)[:200],
             })
+
+    for idx, file in enumerate(files):
+        if file.filename.endswith(".json") or file.filename.endswith(".jsonl"):
+            content = await file.read()
+            is_handled_as_batch = False
+            try:
+                items_to_process = []
+                if file.filename.endswith(".json"):
+                    parsed_json = json.loads(content.decode("utf-8"))
+                    if isinstance(parsed_json, list):
+                        items_to_process = parsed_json
+                elif file.filename.endswith(".jsonl"):
+                    lines = content.decode("utf-8").strip().split('\n')
+                    for line in lines:
+                        if line.strip():
+                            items_to_process.append(json.loads(line))
+                
+                if items_to_process:
+                    items_to_process = items_to_process[:100]  # Limit to 100 to prevent timeout
+                    is_handled_as_batch = True
+                    for sub_idx, item in enumerate(items_to_process):
+                        file_session = f"{session_id}_file{idx}_item{sub_idx}" if session_id else None
+                        
+                        item_bytes = json.dumps(item).encode("utf-8")
+                        mock_file = StarletteUploadFile(
+                            filename=f"{file.filename.replace('.jsonl', '').replace('.json', '')}_item{sub_idx}.json",
+                            file=io.BytesIO(item_bytes),
+                            headers=file.headers
+                        )
+                        
+                        await process_single_file(mock_file, file_session, mock_file.filename)
+            except Exception:
+                pass
+            
+            if is_handled_as_batch:
+                continue
+            
+            # Reset cursor if not batch or json failed
+            await file.seek(0)
+            
+        file_session = f"{session_id}_file{idx}" if session_id else None
+        await process_single_file(file, file_session, file.filename)
     
     success_count = sum(1 for r in results if r["status"] == "success")
     return {

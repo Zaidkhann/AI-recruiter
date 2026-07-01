@@ -64,7 +64,7 @@ class CareerTrajectoryEngine:
         # 3. Level Alignment
         # Compare current (most recent) job level to job requirement level
         current_level = levels[0] if levels else 2
-        target_val = self.level_hierarchy.get(target_level.upper(), 3)
+        target_val = self.level_hierarchy.get((target_level or "SENIOR").upper(), 3)
 
         diff = current_level - target_val
         if diff == 0:

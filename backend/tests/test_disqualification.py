@@ -39,7 +39,7 @@ def test_evaluate_disqualification_all_failures():
         overall_threshold=0.25,
     )
     assert is_disqualified is True
-    assert "No matching required or adjacent skills detected" in reasons
+    assert "No matching required or adjacent skills explicitly listed" in reasons
 
 
 def test_evaluate_disqualification_hidden_talent_not_disqualified():
@@ -49,12 +49,27 @@ def test_evaluate_disqualification_hidden_talent_not_disqualified():
         semantic_score=0.18,
         transferable_val=0.35,
         adjacent_only_score=0.4,
-        final_score=0.26,  # Raised above overall_threshold so they aren't auto-disqualified
+        final_score=0.26,
         semantic_threshold=0.20,
         overall_threshold=0.25,
     )
     assert is_disqualified is False
     assert "Semantic fit below threshold" in reasons
+
+
+def test_evaluate_disqualification_low_score_with_skills_not_disqualified():
+    """Candidates with meaningful skill overlap should rank even if overall score is modest."""
+    engine = RankingEngine()
+    is_disqualified, reasons = engine._evaluate_disqualification(
+        direct_match_ratio=0.25,
+        semantic_score=0.22,
+        transferable_val=0.15,
+        adjacent_only_score=0.30,
+        final_score=0.22,
+        semantic_threshold=0.20,
+        overall_threshold=0.25,
+    )
+    assert is_disqualified is False
 
 
 def test_get_missing_required_skills():

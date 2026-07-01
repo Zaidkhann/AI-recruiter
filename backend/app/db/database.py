@@ -84,3 +84,34 @@ def migrate_candidate_email_non_unique(engine_instance):
     except Exception as e:
         logger.warning(f"Candidate email uniqueness migration skipped: {e}")
 
+
+def migrate_add_missing_columns(engine_instance):
+    """
+    Auto-add any new columns (like redrob_signals) to existing candidate tables.
+    Safe to run on every startup — no-ops when columns already exist.
+    """
+    new_columns = {
+        "redrob_signals": "TEXT",  # JSON column stored as TEXT in SQLite
+    }
+    try:
+        with engine_instance.begin() as conn:
+            dialect = engine_instance.dialect.name
+            for col_name, col_type in new_columns.items():
+                try:
+                    if dialect == "sqlite":
+                        # Check if column exists
+                        result = conn.execute(text(f"PRAGMA table_info(candidates)"))
+                        existing_cols = [row[1] for row in result]
+                        if col_name not in existing_cols:
+                            conn.execute(text(f"ALTER TABLE candidates ADD COLUMN {col_name} {col_type}"))
+                            logger.info(f"Added missing column '{col_name}' to candidates table.")
+                    elif dialect == "postgresql":
+                        conn.execute(text(
+                            f"ALTER TABLE candidates ADD COLUMN IF NOT EXISTS {col_name} {col_type}"
+                        ))
+                        logger.info(f"Ensured column '{col_name}' exists in candidates table.")
+                except Exception as col_err:
+                    logger.warning(f"Column migration for '{col_name}' skipped: {col_err}")
+        logger.info("Column migration check complete.")
+    except Exception as e:
+        logger.warning(f"Column migration skipped: {e}")

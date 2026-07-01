@@ -21,8 +21,43 @@ class AIResumeParsingError(RuntimeError):
     """Raised when resume parsing cannot be completed by the AI parser."""
 
 KNOWN_TECH_SKILLS = [
-    "Python", "React", "Docker", "Kubernetes", "AWS", "FastAPI", "Rust",
-    "Go", "TypeScript", "PostgreSQL", "Redis"
+    # Languages
+    "Python", "JavaScript", "TypeScript", "Java", "C++", "C#", "C", "Go", "Rust",
+    "Ruby", "PHP", "Swift", "Kotlin", "Scala", "R", "Dart", "Perl", "Lua",
+    "Haskell", "Elixir", "Clojure", "Erlang", "MATLAB", "Julia", "Objective-C",
+    # Frontend
+    "React", "Vue", "Angular", "Next.js", "Svelte", "HTML", "CSS", "Tailwind",
+    "Bootstrap", "jQuery", "Redux", "Webpack", "Vite", "Gatsby", "Nuxt",
+    # Backend
+    "Node.js", "Express", "FastAPI", "Django", "Flask", "Spring", "Spring Boot",
+    "ASP.NET", "Rails", "Laravel", "NestJS", "Gin", "Fiber", "Actix",
+    # Databases
+    "PostgreSQL", "MySQL", "MongoDB", "Redis", "SQLite", "Oracle", "SQL Server",
+    "Cassandra", "DynamoDB", "CouchDB", "Neo4j", "InfluxDB", "Elasticsearch",
+    "MariaDB", "Supabase", "Firebase",
+    # Cloud & DevOps
+    "AWS", "GCP", "Azure", "Docker", "Kubernetes", "Terraform", "Ansible",
+    "Jenkins", "CircleCI", "GitHub Actions", "GitLab CI", "ArgoCD", "Helm",
+    "Pulumi", "CloudFormation", "Serverless", "Lambda", "ECS", "EKS", "S3",
+    # Data & ML/AI
+    "Spark", "Hadoop", "Kafka", "Airflow", "dbt", "Snowflake", "BigQuery",
+    "Databricks", "Redshift", "Flink", "Hive", "Presto", "Pandas", "NumPy",
+    "Scikit-learn", "TensorFlow", "PyTorch", "Keras", "JAX", "Hugging Face",
+    "OpenCV", "NLTK", "SpaCy", "LLM", "GPT", "RAG", "LangChain",
+    "Machine Learning", "Deep Learning", "NLP", "Computer Vision",
+    "Data Engineering", "Data Science", "MLOps",
+    # Tools & Practices
+    "Git", "Linux", "Bash", "REST", "GraphQL", "gRPC", "WebSocket",
+    "Microservices", "CI/CD", "Agile", "Scrum", "TDD", "API Design",
+    "System Design", "OAuth", "JWT",
+    # Messaging & Queues
+    "RabbitMQ", "SQS", "Celery", "Pub/Sub",
+    # Mobile
+    "React Native", "Flutter", "iOS", "Android", "SwiftUI", "Jetpack Compose",
+    # Other
+    "Blockchain", "Solidity", "Web3", "Figma", "Tableau", "Power BI",
+    "Grafana", "Prometheus", "DataDog", "New Relic", "Splunk",
+    "SQL", "NoSQL", "ETL", "Data Warehouse", "Data Pipeline",
 ]
 
 

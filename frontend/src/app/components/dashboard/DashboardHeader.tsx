@@ -1,7 +1,7 @@
 "use client";
 
 import React, { memo, useState } from "react";
-import { Cpu, Briefcase, RefreshCw } from "lucide-react";
+import { Cpu, Briefcase, RefreshCw, Download } from "lucide-react";
 import type { Job, SystemStatus } from "@/app/lib/types";
 import { SystemStatusPopover } from "./SystemStatusPopover";
 import { apiPost } from "@/app/lib/api";
@@ -72,6 +72,14 @@ export const DashboardHeader = memo(function DashboardHeader({
             </select>
           </div>
         )}
+
+        <button
+          onClick={() => window.open(process.env.NEXT_PUBLIC_API_URL + "/api/submission-csv", "_blank")}
+          className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 border border-indigo-500 px-3.5 py-1.5 rounded-lg text-xs font-semibold text-white transition-all active:scale-95 shadow-indigo-500/20 shadow-md"
+        >
+          <Download className="h-3.5 w-3.5" />
+          Download CSV
+        </button>
 
         <button
           onClick={resetDatabase}

@@ -82,6 +82,15 @@ class RankingEngine:
         key = self._get_cache_key(candidate_id, job_id)
         redis_client.setex(key, timedelta(hours=24), json.dumps(explanation))
 
+    def clear_job_cache(self, job_id: int):
+        """Flushes cached ranking explanations for a specific job when it is updated."""
+        if not redis_client:
+            return
+        pattern = f"ranking_explanation:*:{job_id}"
+        keys = redis_client.keys(pattern)
+        if keys:
+            redis_client.delete(*keys)
+
     def _calculate_confidence_score(self, candidate: Candidate) -> int:
         score = 40  # base
         if candidate.resume_text and len(candidate.resume_text) > 200:
@@ -114,7 +123,17 @@ class RankingEngine:
                 score += 10
             elif history_len >= 1:
                 score += 5
-                
+
+        # --- REDROB SIGNALS INTEGRATION ---
+        redrob = candidate.redrob_signals or {}
+        if redrob:
+            if redrob.get("profile_completeness_score", 0) > 80:
+                score += 10
+            if redrob.get("verified_email"):
+                score += 5
+            if redrob.get("verified_phone"):
+                score += 5
+
         return min(100, score)
 
     def _generate_rule_based_explanation(self, c_info: dict, job_skills: list) -> dict:
@@ -427,24 +446,42 @@ class RankingEngine:
         overall_threshold: float,
     ) -> tuple[bool, list[str]]:
         reasons = []
-        
-        # 1. Core Score Failure
-        if final_score < overall_threshold:
-            reasons.append("Overall ranking score below threshold")
-            
-        # 2. Complete Skill Mismatch (No Direct, No Adjacent)
-        if direct_match_ratio == 0 and adjacent_only_score <= 0:
-            reasons.append("No matching required or adjacent skills detected")
-            
-        # 3. Semantic Mismatch
-        if semantic_score < semantic_threshold:
+        is_disqualified = False
+
+        has_direct_skills = direct_match_ratio >= 0.08
+        has_adjacent_skills = adjacent_only_score >= 0.08
+        has_transferable_skills = transferable_val >= 0.12
+        has_skill_signal = has_direct_skills or has_adjacent_skills or has_transferable_skills
+        has_semantic_signal = semantic_score >= semantic_threshold
+
+        # 1. Overall score only disqualifies when there is no meaningful skill alignment
+        if final_score < overall_threshold and not has_skill_signal:
+            reasons.append("Overall ranking score below threshold with weak skill alignment")
+            is_disqualified = True
+
+        # 2. Skill mismatch — no direct, adjacent, or transferable overlap
+        if not has_skill_signal:
+            reasons.append("No matching required or adjacent skills explicitly listed")
+            is_disqualified = True
+
+        # 3. Semantic warning (informational; does not auto-disqualify on its own)
+        if not has_semantic_signal:
             reasons.append("Semantic fit below threshold")
 
-        # Disqualify if they fail the core score threshold OR if they have absolutely no relevant skills
-        is_disqualified = (final_score < overall_threshold) or (direct_match_ratio == 0 and adjacent_only_score <= 0)
-        
-        # 4. Critical Semantic Failure
-        if semantic_score < (semantic_threshold * 0.8) and final_score < (overall_threshold + 0.15):
+        # 4. Disqualify only when semantic fit AND explicit skill matches are both weak
+        if (not has_semantic_signal) and (direct_match_ratio < 0.15 and adjacent_only_score < 0.15 and not has_transferable_skills):
+            is_disqualified = True
+            if "Poor semantic fit combined with low skill match" not in reasons:
+                reasons.append("Poor semantic fit combined with low skill match")
+
+        # 5. Critical mismatch — only for profiles with near-zero relevance on all axes
+        if (
+            semantic_score < (semantic_threshold * 0.5)
+            and direct_match_ratio < 0.05
+            and adjacent_only_score < 0.05
+            and not has_transferable_skills
+            and final_score < overall_threshold
+        ):
             is_disqualified = True
             if "Critical semantic mismatch with job requirements" not in reasons:
                 reasons.append("Critical semantic mismatch with job requirements")
@@ -455,6 +492,152 @@ class RankingEngine:
         if isinstance(result, dict):
             return result.get("ranked", []) + result.get("disqualified", [])
         return result or []
+
+    def _calculate_heuristic_score(self, candidate: Candidate) -> tuple[float, str]:
+        """Calculates custom Redrob AI Engineer heuristic score and reasoning."""
+        import re
+        
+        CORE_SKILLS = {
+            'sentence-transformers', 'openai embeddings', 'bge', 'e5',
+            'pinecone', 'weaviate', 'qdrant', 'milvus', 'opensearch', 'elasticsearch', 'faiss',
+            'python', 'ndcg', 'mrr', 'map', 'a/b test', 'ab test'
+        }
+        NICE_TO_HAVE_SKILLS = {
+            'lora', 'qlora', 'peft', 'xgboost', 'learning-to-rank', 'learning to rank',
+            'distributed systems', 'large-scale inference'
+        }
+        CONSULTING_FIRMS = {
+            'tcs', 'infosys', 'wipro', 'accenture', 'cognizant', 'capgemini', 'mindtree',
+            'tata consultancy', 'ibm', 'deloitte', 'pwc', 'ey', 'kpmg'
+        }
+        RETRIEVAL_RANKING_REGEX = re.compile(r'\b(retrieval|ranking|search|recommendation system|recsys|vector db|vector database|embeddings?)\b', re.IGNORECASE)
+        CV_ROBOTICS_REGEX = re.compile(r'\b(computer vision|speech|robotics|image classification)\b', re.IGNORECASE)
+        NLP_REGEX = re.compile(r'\b(nlp|natural language|text processing|ir|information retrieval)\b', re.IGNORECASE)
+
+        score = 0.0
+        disqualifiers = []
+        
+        career = candidate.career_history or []
+        skills = candidate.skills or []
+        redrob = candidate.redrob_signals or {}
+        
+        total_career_months = sum(job.get('duration_months', 0) for job in career if job.get('duration_months'))
+        yoe = total_career_months / 12.0
+        
+        latest_title = "AI Engineer"
+        latest_company = "Tech Co"
+        if career:
+            latest_job = career[0]
+            latest_title = latest_job.get('title', latest_title)
+            latest_company = latest_job.get('company', latest_company)
+            
+        if 6 <= yoe <= 8:
+            score += 15.0
+        elif yoe >= 2:
+            score += 10.0
+        else:
+            score += 5.0
+            
+        core_matches = 0
+        nice_matches = 0
+        core_skills_found = set()
+        
+        for s in skills:
+            s_lower = s.lower()
+            for core in CORE_SKILLS:
+                if core in s_lower:
+                    core_matches += 1.0
+                    core_skills_found.add(core)
+                    break
+            for nice in NICE_TO_HAVE_SKILLS:
+                if nice in s_lower:
+                    nice_matches += 1.0
+                    break
+                    
+        score += min(20.0, core_matches * 3.0)
+        score += min(5.0, nice_matches * 1.5)
+        
+        consulting_job_count = 0
+        product_job_count = 0
+        retrieval_mentions = 0
+        cv_mentions = 0
+        nlp_mentions = 0
+        
+        for job in career:
+            company = job.get('company', '').lower()
+            desc = job.get('description', '')
+            
+            is_consulting = any(c in company for c in CONSULTING_FIRMS)
+            if is_consulting:
+                consulting_job_count += 1
+            else:
+                product_job_count += 1
+                
+            if RETRIEVAL_RANKING_REGEX.search(desc):
+                retrieval_mentions += 1
+            if CV_ROBOTICS_REGEX.search(desc):
+                cv_mentions += 1
+            if NLP_REGEX.search(desc):
+                nlp_mentions += 1
+                
+        if product_job_count == 0 and consulting_job_count > 0:
+            score -= 8.0
+        elif product_job_count > 0:
+            score += 10.0
+            
+        if retrieval_mentions > 0:
+            score += 25.0
+            
+        if cv_mentions > 0 and nlp_mentions == 0 and retrieval_mentions == 0:
+            score -= 5.0
+            
+        np_days = redrob.get('notice_period_days', 90)
+        if np_days <= 30:
+            score += 5.0
+        elif np_days > 60:
+            score -= 3.0
+            
+        loc = (candidate.location or '').lower()
+        loc_bonus = False
+        if any(city in loc for city in ['pune', 'noida']):
+            score += 10.0
+            loc_bonus = True
+        elif any(city in loc for city in ['hyderabad', 'mumbai', 'delhi', 'ncr', 'bangalore', 'bengaluru', 'chennai', 'remote']):
+            score += 5.0
+        else:
+            score -= 3.0
+            
+        if disqualifiers:
+            score -= len(disqualifiers) * 3
+            
+        narrative_parts = []
+        narrative_parts.append(f"{latest_title} at {latest_company} with {round(yoe, 1)} years of experience.")
+        
+        if retrieval_mentions > 0:
+            if core_skills_found:
+                top_skills = [s.title() for s in list(core_skills_found)[:3]]
+                narrative_parts.append(f"Strong production evidence building retrieval/ranking systems using {', '.join(top_skills)}.")
+            else:
+                narrative_parts.append("Has built retrieval/ranking systems in production.")
+        else:
+            if len(core_skills_found) >= 2:
+                top_skills = [s.title() for s in list(core_skills_found)[:3]]
+                narrative_parts.append(f"Matches core AI stack ({', '.join(top_skills)}).")
+            else:
+                narrative_parts.append("Solid backend ML experience.")
+                
+        if np_days <= 30:
+            narrative_parts.append(f"Can join immediately ({np_days} days notice).")
+        
+        if loc_bonus:
+            narrative_parts.append("Based in preferred location.")
+            
+        if disqualifiers:
+            narrative_parts.append(f"Concerns: {', '.join(disqualifiers)}.")
+            
+        max_possible = 95.0
+        normalized = min(1.0, max(0.0, score / max_possible))
+        return normalized, " ".join(narrative_parts)
 
     def rank_candidates(
         self,
@@ -492,23 +675,23 @@ class RankingEngine:
             }
 
         default_weights = {
-            "semantic": 0.5,
-            "adjacency": 0.5,
+            "semantic": 1.0,           # Critical: Direct JD embedding match
+            "adjacency": 0.9,          # Critical: Direct skill requirement match
+            "domain_expertise": 0.85,  # High: Job domain alignment
+            "skill_transferability": 0.7,
             "trajectory": 0.5,
-            "behavioral": 0.5,
+            "behavioral": 0.4,
             "success": 0.5,
-            "learning": 0.5,
-            "market": 0.5,
+            "learning": 0.4,
+            "market": 0.3,
             "potential": 0.5,
-            "skill_transferability": 0.5,
             "career_growth_momentum": 0.5,
-            "startup_readiness": 0.5,
-            "leadership_impact": 0.5,
-            "open_source_influence": 0.5,
-            "learning_agility": 0.5,
-            "domain_expertise": 0.5,
+            "startup_readiness": 0.3,
+            "leadership_impact": 0.4,
+            "open_source_influence": 0.2,
+            "learning_agility": 0.4,
             "team_complement_score": 0.5,
-            "retention_prediction": 0.5,
+            "retention_prediction": 0.4,
             "interview_success_prediction": 0.5
         }
         active_weights = {**default_weights, **(weights or {})}
@@ -518,15 +701,23 @@ class RankingEngine:
         is_embedding_failed = all(v == 0.0 for v in query_vector)
         
         qdrant_results = qdrant_manager.search_candidates(query_vector, limit=50)
-        retrieved_ids = [res["candidate_id"] for res in qdrant_results]
         semantic_scores = {res["candidate_id"]: res["score"] for res in qdrant_results}
-        
-        if not retrieved_ids:
-            candidates = db.query(Candidate).all()
-            retrieved_ids = [c.id for c in candidates]
-            semantic_scores = {c.id: 0.5 for c in candidates}
-        else:
-            candidates = db.query(Candidate).filter(Candidate.id.in_(retrieved_ids)).all()
+
+        # Always rank every candidate in the database. Qdrant top-k only supplies
+        # semantic scores; newly uploaded resumes must not be excluded from ranking.
+        candidates = db.query(Candidate).all()
+        if not candidates:
+            return {
+                "ranked": [],
+                "disqualified": [],
+                "analytics": {"total_processed": 0, "ranked_count": 0, "disqualified_count": 0},
+                "thresholds": {
+                    "semantic_threshold": semantic_threshold,
+                    "overall_threshold": overall_threshold,
+                },
+            }
+        for candidate in candidates:
+            semantic_scores.setdefault(candidate.id, 0.5)
 
         team_skills = self.get_team_skills(db)
         j_skills = job.graph_schema.get("skills_required", []) if job.graph_schema else []
@@ -557,7 +748,7 @@ class RankingEngine:
             direct_match_ratio = skill_adjacency_engine.calculate_direct_match_ratio(c_skills, j_skills)
             adjacent_only_score = skill_adjacency_engine.calculate_adjacent_only_match(db, c_skills, j_skills)
             adjacency_score = skill_adjacency_engine.calculate_match(db, c_skills, j_skills)
-            target_level = job.graph_schema.get("experience_level", "SENIOR") if job.graph_schema else "SENIOR"
+            target_level = (job.graph_schema.get("experience_level") if job.graph_schema else None) or "SENIOR"
             trajectory_metrics = career_trajectory_engine.calculate_score(candidate.career_history or [], target_level)
             behavioral_metrics = behavioral_intelligence_engine.calculate_score(candidate.github_stats or {})
             success_metrics = success_potential_engine.calculate_score(candidate.career_history or [], trajectory_metrics)
@@ -580,12 +771,16 @@ class RankingEngine:
                 c_skills_set = {s.lower() for s in c_skills} if c_skills else set()
                 j_skills_set = {s.lower() for s in j_skills}
                 if j_skills_set:
-                    sem_score = len(c_skills_set.intersection(j_skills_set)) / len(j_skills_set)
+                    overlap_score = len(c_skills_set.intersection(j_skills_set)) / len(j_skills_set)
+                    sem_score = max(sem_score, overlap_score, adjacency_score * 0.75)
                 else:
-                    sem_score = 0.5
+                    sem_score = max(sem_score, 0.5)
 
             team_gap_val = self.calculate_team_gap_score(c_skills, j_skills, team_skills)
-            transferable_val = max(0.0, adjacency_score - sem_score) if adjacency_score > sem_score else 0.0
+            transferable_val = max(
+                adjacent_only_score * 0.85,
+                max(0.0, adjacency_score - direct_match_ratio) if adjacency_score > direct_match_ratio else 0.0,
+            )
 
             # Deep Job Understanding evaluations
             schema = job.graph_schema or {}
@@ -624,6 +819,30 @@ class RankingEngine:
                 "interview_success_prediction": (behavioral_metrics.get("behavioral_score", 0.5) + success_metrics.get("success_probability", 0.5) + hidden_fit_score) / 3.0
             }
 
+            # --- REDROB SIGNALS INTEGRATION ---
+            redrob = candidate.redrob_signals or {}
+            redrob_boost = 0.0
+            
+            if redrob:
+                github_activity_score = redrob.get("github_activity_score")
+                if github_activity_score is not None:
+                    factors["behavioral"] = min(1.0, max(0.0, github_activity_score / 10.0))
+                
+                interview_rate = redrob.get("interview_completion_rate")
+                offer_rate = redrob.get("offer_acceptance_rate")
+                if interview_rate is not None and offer_rate is not None:
+                    engagement_modifier = (interview_rate + offer_rate) / 2.0
+                    factors["retention_prediction"] = (factors["retention_prediction"] + engagement_modifier) / 2.0
+                
+                assessments = redrob.get("skill_assessment_scores", {})
+                if assessments:
+                    high_scores = sum(1 for val in assessments.values() if val > 50)
+                    if high_scores > 0:
+                        redrob_boost += 0.05 * high_scores
+                        
+                if redrob.get("recruiter_response_rate", 0) > 0.3:
+                    redrob_boost += 0.05
+
             total_active_weight = sum(active_weights.values())
             raw_score = 0.0
             for f_name, f_val in factors.items():
@@ -640,7 +859,19 @@ class RankingEngine:
             final_score = final_score * (1.0 + self.alpha * benchmark_compatibility)
             # Add hidden fit boost (up to 10% bonus modifier)
             final_score = final_score * (1.0 + 0.10 * hidden_fit_score)
+            
+            # Apply Redrob signal boost
+            final_score = final_score * (1.0 + redrob_boost)
             final_score = min(1.0, max(0.0, final_score))
+
+            # Role-specific heuristic: metadata + light boost, never replaces multi-factor score
+            heuristic_score, heuristic_reasoning = self._calculate_heuristic_score(candidate)
+            candidate.ranking_explanations = candidate.ranking_explanations or {}
+            candidate.ranking_explanations["heuristic_reasoning"] = heuristic_reasoning
+            candidate.ranking_explanations["heuristic_score"] = round(heuristic_score, 3)
+            if heuristic_score > 0.45:
+                heuristic_boost = min(0.08, (heuristic_score - 0.45) * 0.2)
+                final_score = min(1.0, final_score * (1.0 + heuristic_boost))
 
             factor_breakdown = {
                 "skills": round((factors["semantic"] + factors["adjacency"] + factors["skill_transferability"]) / 3 * 100, 1),
@@ -680,6 +911,8 @@ class RankingEngine:
                     "hidden_fit": round(hidden_fit_score, 2),
                     "direct_skill_match": round(direct_match_ratio, 2),
                     "adjacent_skill_match": round(adjacent_only_score, 2),
+                    "heuristic_score": round(heuristic_score, 2),
+                    "redrob_boost": round(redrob_boost, 2),
                 },
                 "trajectory_details": trajectory_metrics,
                 "behavioral_details": behavioral_metrics,
@@ -763,6 +996,7 @@ class RankingEngine:
                 "phone": c.phone,
                 "location": c.location,
                 "education": c.education or [],
+                "career_history": c.career_history or [],
                 "github_url": c.github_url,
                 "linkedin_url": c.linkedin_url,
                 "portfolio_url": c.portfolio_url,

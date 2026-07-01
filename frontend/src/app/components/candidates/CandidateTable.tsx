@@ -11,7 +11,8 @@ interface Props {
 }
 
 // Simple heuristic to add visual flair for tiers similar to the reference image
-const getTierForEntity = (name: string): "Global T1" | "Global T3" | null => {
+const getTierForEntity = (name?: string | null): "Global T1" | "Global T3" | null => {
+  if (!name) return null;
   const lower = name.toLowerCase();
   const t1Keywords = ["google", "amazon", "meta", "facebook", "apple", "netflix", "microsoft", "stanford", "harvard", "mit", "oxford", "cambridge", "iit", "wharton", "kellogg", "insead", "y-combinator"];
   if (t1Keywords.some(k => lower.includes(k))) return "Global T1";

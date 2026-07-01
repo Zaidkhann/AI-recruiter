@@ -29,9 +29,9 @@ class Settings(BaseSettings):
     # Frontend URL
     NEXT_PUBLIC_API_URL: str = Field(default="")
 
-    # Disqualification thresholds
-    DISQUALIFY_SEMANTIC_THRESHOLD: float = Field(default=0.20)
-    DISQUALIFY_OVERALL_THRESHOLD: float = Field(default=0.25)
+    # Disqualification thresholds (applied only when skill alignment is also weak)
+    DISQUALIFY_SEMANTIC_THRESHOLD: float = Field(default=0.18)
+    DISQUALIFY_OVERALL_THRESHOLD: float = Field(default=0.20)
 
     model_config = SettingsConfigDict(
         env_file=".env",

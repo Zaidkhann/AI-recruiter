@@ -111,6 +111,16 @@ export const CandidateCard = memo(function CandidateCard({ candidate: cand, isSe
           </div>
         </div>
       </div>
+
+      {/* Heuristic Reasoning Injection */}
+      {((cand as any).ranking_explanations?.heuristic_reasoning || (cand as any).candidate?.ranking_explanations?.heuristic_reasoning) && (
+        <div className="px-4 py-2.5 border-t border-[#242435]/50 bg-indigo-500/5">
+          <p className="text-xs text-indigo-200 leading-relaxed font-medium">
+            <span className="font-bold text-indigo-400 mr-1">Hackathon Score Rationale:</span>
+            {(cand as any).ranking_explanations?.heuristic_reasoning || (cand as any).candidate?.ranking_explanations?.heuristic_reasoning}
+          </p>
+        </div>
+      )}
       
       {/* Explainable AI Factor Breakdown Pills */}
       {cand.factor_breakdown && (

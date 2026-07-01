@@ -1,14 +1,61 @@
 import os
 import logging
-from fastapi import FastAPI, Depends, Request
+from fastapi import FastAPI, Depends, Request, BackgroundTasks
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from app.db.database import Base, engine, db_status, SessionLocal, migrate_candidate_email_non_unique
+from app.db.database import Base, engine, db_status, SessionLocal, migrate_candidate_email_non_unique, migrate_add_missing_columns
 from app.db.qdrant_client import qdrant_manager, vector_status
 from app.db.redis_client import redis_manager, cache_status
 from app.services.llm_service import llm_status
 from app.db.models import Candidate, Job, GraphNode, GraphEdge, AuditLog
-from app.api import jobs, candidates, rank, copilot, team, auth, audit, intelligence, ats
+
+_LEGACY_DEMO_JOBS = [
+    ("Senior AI Backend Architect", "YC_FOUNDING_ENGINEER"),
+    ("Staff Systems Infrastructure Engineer", "FAANG_STAFF"),
+]
+
+_LEGACY_DEMO_CANDIDATE_EMAILS = [
+    "devin@carter.dev",
+    "elena@rostova.io",
+    "marcus@hopson.tech",
+    "amina@alfarsi.net",
+]
+
+
+def _remove_legacy_demo_jobs(db: Session) -> int:
+    removed = 0
+    for title, benchmark in _LEGACY_DEMO_JOBS:
+        deleted = (
+            db.query(Job)
+            .filter(Job.title == title, Job.benchmark_profile == benchmark)
+            .delete(synchronize_session=False)
+        )
+        removed += deleted
+    if removed:
+        db.commit()
+    return removed
+
+
+def _remove_legacy_demo_candidates(db: Session) -> int:
+    legacy_candidates = (
+        db.query(Candidate)
+        .filter(Candidate.email.in_(_LEGACY_DEMO_CANDIDATE_EMAILS))
+        .all()
+    )
+    if not legacy_candidates:
+        return 0
+
+    candidate_ids = [c.id for c in legacy_candidates]
+    deleted = (
+        db.query(Candidate)
+        .filter(Candidate.id.in_(candidate_ids))
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    qdrant_manager.delete_candidates(candidate_ids)
+    return deleted
+from app.api import jobs, candidates, rank, copilot, team, audit, intelligence, ats
 from app.db.seed import seed_data
 from app.core.rate_limit import RateLimitMiddleware
 from app.core.security_headers import SecurityHeadersMiddleware
@@ -46,6 +93,7 @@ def startup_event():
     # Initialize SQL Database Tables
     Base.metadata.create_all(bind=engine)
     migrate_candidate_email_non_unique(engine)
+    migrate_add_missing_columns(engine)
     logger.info("Database tables initialized.")
 
     # 1. Trigger pings to check actual external status and set status dicts
@@ -59,15 +107,16 @@ def startup_event():
     try:
         candidates_count = db.query(Candidate).count()
         jobs_count = db.query(Job).count()
+        removed_demo_jobs = _remove_legacy_demo_jobs(db)
+        if removed_demo_jobs:
+            jobs_count = db.query(Job).count()
+            logger.info("Removed %s legacy demo job(s) from database.", removed_demo_jobs)
+        removed_demo_candidates = _remove_legacy_demo_candidates(db)
+        if removed_demo_candidates:
+            candidates_count = db.query(Candidate).count()
+            logger.info("Removed %s legacy demo resume(s) from database.", removed_demo_candidates)
         if candidates_count == 0:
-            if os.getenv("RENDER"):
-                logger.info("Database empty. Skipping auto-seeding on Render.")
-            else:
-                logger.info("No candidates found in database. Running auto-seeding...")
-                seed_data()
-                candidates_count = db.query(Candidate).count()
-                jobs_count = db.query(Job).count()
-                logger.info("Automatic database seeding completed.")
+            logger.info("No candidates found in database. Auto-seeding is disabled.")
     except Exception as e:
         logger.error(f"Error during auto-seeding check: {e}")
     finally:
@@ -93,7 +142,7 @@ def startup_event():
     logger.info("=" * 60 + "\n")
 
 # Register Routers
-app.include_router(auth.router)
+
 app.include_router(audit.router)
 app.include_router(jobs.router)
 app.include_router(candidates.router)
@@ -191,26 +240,23 @@ def get_system_status():
         "audit_events": audit_events
     }
 
-from app.core.auth import require_role
 from app.core.audit import log_audit_event
-from app.db.models import User
 from app.db.database import get_db
 
 @app.post("/api/seed-db")
 def trigger_db_seeding(
     request: Request,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role("admin"))
 ):
-    """Resets the SQL and Qdrant databases and seeds them with high quality default data (Admin only)."""
+    """Resets the SQL and Qdrant databases and seeds them with high quality default data."""
     client_ip = request.client.host if request.client else "unknown"
     try:
         seed_data()
         log_audit_event(
             db=db,
             action="DATABASE_SEED",
-            username=current_user.username,
-            user_id=current_user.id,
+            username=None,
+            user_id=None,
             ip_address=client_ip,
             details={"status": "success"}
         )
@@ -220,10 +266,27 @@ def trigger_db_seeding(
         log_audit_event(
             db=db,
             action="DATABASE_SEED",
-            username=current_user.username,
-            user_id=current_user.id,
+            username=None,
+            user_id=None,
             ip_address=client_ip,
             details={"status": "error", "message": str(e)}
         )
         return {"status": "error", "message": str(e)}
+
+
+import subprocess
+
+@app.get("/api/submission-csv")
+def get_submission_csv():
+    """Generates (if needed) and returns the ai_freaks.csv file."""
+    csv_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../ai_freaks.csv"))
+    script_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../"))
+    
+    # If it doesn't exist, we run the script to generate it
+    if not os.path.exists(csv_path):
+        logger.info("ai_freaks.csv not found. Generating now (this takes ~20s)...")
+        subprocess.run(["python3", "rank_candidates.py"], cwd=script_dir, check=True)
+        
+    return FileResponse(path=csv_path, filename="ai_freaks.csv", media_type="text/csv")
+
 

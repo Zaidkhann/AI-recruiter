@@ -90,8 +90,6 @@ export const CandidateList = memo(function CandidateList({
     URL.revokeObjectURL(url);
   };
 
-  const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
-
   const openResumeViewer = async (candidate: Candidate, e: React.MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation();
     setResumeViewer({
@@ -102,8 +100,7 @@ export const CandidateList = memo(function CandidateList({
     });
 
     try {
-      const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
-      const res = await fetch(`${getApiUrl()}/api/candidates/${candidate.id}`, { headers });
+      const res = await fetch(`${getApiUrl()}/api/candidates/${candidate.id}`);
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: "Unable to load resume." }));
         setResumeViewer({
@@ -275,7 +272,6 @@ export const CandidateList = memo(function CandidateList({
           candidateA={compareSelected[0]}
           candidateB={compareSelected[1]}
           job={activeJob}
-          apiToken={token}
         />
       )}
 

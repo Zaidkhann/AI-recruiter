@@ -9,10 +9,9 @@ interface Props {
   candidateA: Candidate;
   candidateB: Candidate;
   job: Job;
-  apiToken: string | null;
 }
 
-export function CandidateComparisonModal({ isOpen, onClose, candidateA, candidateB, job, apiToken }: Props) {
+export function CandidateComparisonModal({ isOpen, onClose, candidateA, candidateB, job }: Props) {
   const [comparisonData, setComparisonData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
 
@@ -26,10 +25,9 @@ export function CandidateComparisonModal({ isOpen, onClose, candidateA, candidat
     setLoading(true);
     try {
       const getAPIUrl = () => process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-      const headers: Record<string, string> = apiToken ? { "Authorization": `Bearer ${apiToken}` } : {};
       const url = `${getAPIUrl()}/api/rank/compare?job_id=${job.id}&candidate_a=${candidateA.id}&candidate_b=${candidateB.id}`;
       
-      const res = await fetch(url, { headers });
+      const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
         setComparisonData(data);

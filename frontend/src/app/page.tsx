@@ -103,6 +103,15 @@ export default function Dashboard() {
   const [activeUploadSession, setActiveUploadSession] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"card" | "table">("card");
 
+  // Job Description (compulsory) state
+  const [jdText, setJdText] = useState<string>("");
+  const [jdFile, setJdFile] = useState<File | null>(null);
+  const [jdDragActive, setJdDragActive] = useState(false);
+  const [jdError, setJdError] = useState<string | null>(null);
+  const [jdSaving, setJdSaving] = useState(false);
+  const [jdSaved, setJdSaved] = useState(false);
+  const [jdInputMode, setJdInputMode] = useState<"write" | "file">("write");
+
   const handleDownloadCSV = () => {
     if (candidates.length === 0) {
       alert("No candidates to download");
@@ -135,14 +144,7 @@ export default function Dashboard() {
     URL.revokeObjectURL(url);
   };
   
-  // JWT Authentication States
-  const [token, setToken] = useState<string | null>(null);
-  const [username, setUsername] = useState<string>("");
-  const [role, setRole] = useState<string>("");
-  const [loginUsername, setLoginUsername] = useState("");
-  const [loginPassword, setLoginPassword] = useState("");
-  const [loginError, setLoginError] = useState("");
-  const [loginLoading, setLoginLoading] = useState(false);
+  const role = "admin";
 
   // Security Audit Log States
   const [showAuditLogs, setShowAuditLogs] = useState(false);
@@ -190,80 +192,10 @@ export default function Dashboard() {
     return process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
   };
 
-  const getAuthHeaders = (): Record<string, string> => {
-    const savedToken = token || (typeof window !== "undefined" ? localStorage.getItem("token") : null);
-    return savedToken ? { "Authorization": `Bearer ${savedToken}` } : {};
-  };
-
-  const handleLogin = async (e?: React.FormEvent, customUser?: string, customPass?: string) => {
-    if (e) e.preventDefault();
-    setLoginError("");
-    setLoginLoading(true);
-    const u = customUser || loginUsername;
-    const p = customPass || loginPassword;
-    
-    try {
-      const res = await fetch(`${getAPIUrl()}/api/auth/login`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: u, password: p })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        localStorage.setItem("token", data.access_token);
-        localStorage.setItem("username", data.username);
-        localStorage.setItem("role", data.role);
-        setToken(data.access_token);
-        setUsername(data.username);
-        setRole(data.role);
-        setLoginUsername("");
-        setLoginPassword("");
-        // Trigger initial data load
-        setTimeout(() => {
-          fetchInitialData();
-        }, 100);
-      } else {
-        const err = await res.json().catch(() => ({ detail: "Invalid credentials" }));
-        setLoginError(err.detail || "Authentication failed");
-      }
-    } catch (err) {
-      setLoginError("Could not reach authentication server");
-    } finally {
-      setLoginLoading(false);
-    }
-  };
-
-  const handleLogout = (message?: string) => {
-    localStorage.removeItem("token");
-    localStorage.removeItem("username");
-    localStorage.removeItem("role");
-    setToken(null);
-    setUsername("");
-    setRole("");
-    setJobs([]);
-    setCandidates([]);
-    setDisqualifiedCandidates([]);
-    setRankingAnalytics(null);
-    setOverriddenCandidateIds(new Set());
-    setSystemStatus(null);
-    setUploadLoading(false);
-    setActiveUploadSession(null);
-    setLoginError(message || "");
-  };
-
-  const getAuthErrorMessage = (detail: unknown): string => {
-    const message = formatApiError(detail, 160);
-    return message.toLowerCase().includes("expired")
-      ? "Your session has expired. Please sign in again to ingest resumes."
-      : message;
-  };
-
   const fetchAuditLogs = async () => {
     setLoadingAudit(true);
     try {
-      const res = await fetch(`${getAPIUrl()}/api/admin/audit-logs`, {
-        headers: getAuthHeaders()
-      });
+      const res = await fetch(`${getAPIUrl()}/api/admin/audit-logs`);
       if (res.ok) {
         const data = await res.json();
         setAuditLogs(data);
@@ -277,14 +209,11 @@ export default function Dashboard() {
 
   const fetchSystemStatus = async () => {
     try {
-      const statusRes = await fetch(`${getAPIUrl()}/api/system/status`, {
-        headers: getAuthHeaders()
-      });
+      const statusRes = await fetch(`${getAPIUrl()}/api/system/status`);
       if (statusRes.ok) {
         const statusData = await statusRes.json();
         setSystemStatus(statusData);
       } else {
-        if (statusRes.status === 401) handleLogout();
         setSystemStatus({ mode: "offline" });
       }
     } catch (e) {
@@ -294,37 +223,24 @@ export default function Dashboard() {
 
   const fetchInitialData = async () => {
     try {
-      const statusRes = await fetch(`${getAPIUrl()}/api/system/status`, {
-        headers: getAuthHeaders()
-      });
+      const statusRes = await fetch(`${getAPIUrl()}/api/system/status`);
       if (statusRes.ok) {
         const statusData = await statusRes.json();
         setSystemStatus(statusData);
       } else {
-        if (statusRes.status === 401) {
-          handleLogout();
-          return;
-        }
         setSystemStatus({ mode: "offline" });
         return;
       }
 
       // Fetch Jobs
-      const jobsRes = await fetch(`${getAPIUrl()}/api/jobs`, {
-        headers: getAuthHeaders()
-      });
+      const jobsRes = await fetch(`${getAPIUrl()}/api/jobs`);
       if (jobsRes.ok) {
         const jobsData = await jobsRes.json();
         setJobs(jobsData);
-        if (jobsData.length > 0 && selectedJobId === null) {
-          setSelectedJobId(jobsData[0].id);
-        }
       }
 
       // Fetch Team Skills and Members
-      const teamRes = await fetch(`${getAPIUrl()}/api/team`, {
-        headers: getAuthHeaders()
-      });
+      const teamRes = await fetch(`${getAPIUrl()}/api/team`);
       if (teamRes.ok) {
         const teamData = await teamRes.json();
         setTeam(teamData);
@@ -353,21 +269,36 @@ export default function Dashboard() {
 
   const calculateRankings = async (activeWeights: any, benchmarkProfile: string) => {
     if (selectedJobId === null) return;
+
+    // Enforce compulsory job description before ranking
+    // Check both local jdText state AND the job's own stored description (handles race condition on job selection)
+    const activeJobData = jobs.find(j => j.id === selectedJobId);
+    const effectiveJd = jdText.trim() || (activeJobData?.description || "").trim();
+    if (!effectiveJd) {
+      setJdError("A job description is required before ranking candidates. Please provide one below the Resume Ingestion section.");
+      setRankingError("Job description is required. Scroll up and add a job description to enable candidate ranking.");
+      return;
+    }
+    setJdError(null);
+
     setIsRanking(true);
     setRankingError(null);
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
       const rankRes = await fetch(`${getAPIUrl()}/api/rank`, {
         method: "POST",
         headers: { 
           "Content-Type": "application/json",
-          ...getAuthHeaders()
         },
         body: JSON.stringify({
           job_id: selectedJobId,
           weights: activeWeights,
           benchmark_profile: benchmarkProfile
-        })
+        }),
+        signal: controller.signal
       });
+      clearTimeout(timeoutId);
       if (rankRes.ok) {
         const rankData = await rankRes.json();
         if (Array.isArray(rankData)) {
@@ -381,23 +312,23 @@ export default function Dashboard() {
         }
         setOverriddenCandidateIds(new Set());
       } else {
-        if (rankRes.status === 401) {
-          handleLogout();
-          return;
-        }
         const errText = await rankRes.text().catch(() => "Failed compute rankings.");
         let errMsg = "Failed to calculate rankings.";
         try {
           const errObj = JSON.parse(errText);
-          errMsg = errObj.detail || errMsg;
+          errMsg = errObj.detail ? formatApiError(errObj.detail, 160) : errMsg;
         } catch {
           errMsg = errText || errMsg;
         }
         setRankingError(errMsg);
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error("Error calculating rankings:", e);
-      setRankingError("Connection error. Could not reach ranking API server.");
+      if (e?.name === "AbortError") {
+        setRankingError("Ranking request timed out. The server may be processing many candidates. Please try again.");
+      } else {
+        setRankingError("Connection error. Could not reach the backend server at " + getAPIUrl() + ". Please ensure the backend is running.");
+      }
     } finally {
       setIsRanking(false);
     }
@@ -405,43 +336,46 @@ export default function Dashboard() {
 
   useEffect(() => {
     setMounted(true);
-    const savedToken = localStorage.getItem("token");
-    const savedUser = localStorage.getItem("username");
-    const savedRole = localStorage.getItem("role");
-    if (savedToken && savedUser && savedRole) {
-      setToken(savedToken);
-      setUsername(savedUser);
-      setRole(savedRole);
-      setTimeout(() => {
-        fetch(`${getAPIUrl()}/api/auth/me`, {
-          headers: { "Authorization": `Bearer ${savedToken}` }
-        }).then(async (res) => {
-          if (res.ok) {
-            fetchInitialData();
-            return;
-          }
-          const err = await res.json().catch(() => ({ detail: "Session expired" }));
-          handleLogout(getAuthErrorMessage(err.detail));
-        }).catch(() => {
-          handleLogout("Could not validate your session. Please sign in again.");
-        });
-      }, 50);
-    }
+    fetchInitialData();
   }, []);
 
   useEffect(() => {
-    if (selectedJobId !== null && token) {
-      fetchData();
+    if (jobs.length > 0 && selectedJobId === null) {
+      setSelectedJobId(jobs[0].id);
+    } else if (jobs.length === 0) {
+      setSelectedJobId(null);
+    } else if (selectedJobId !== null && !jobs.some((j) => j.id === selectedJobId)) {
+      setSelectedJobId(jobs[0]?.id ?? null);
     }
-  }, [selectedJobId, token]);
+  }, [jobs, selectedJobId]);
 
   useEffect(() => {
-    if (!token) return;
+    if (selectedJobId !== null) {
+      fetchData();
+    }
+  }, [selectedJobId]);
+
+  // Auto-populate JD text from the active job's description
+  useEffect(() => {
+    if (selectedJobId !== null && jobs.length > 0) {
+      const activeJobData = jobs.find(j => j.id === selectedJobId);
+      if (activeJobData?.description) {
+        setJdText(activeJobData.description);
+        setJdSaved(true);
+        setJdError(null);
+      } else {
+        setJdText("");
+        setJdSaved(false);
+      }
+    }
+  }, [selectedJobId, jobs]);
+
+  useEffect(() => {
     const statusInterval = setInterval(() => {
       fetchSystemStatus();
     }, 10000);
     return () => clearInterval(statusInterval);
-  }, [token]);
+  }, []);
 
   useEffect(() => {
     if (chatEndRef.current) {
@@ -465,7 +399,6 @@ export default function Dashboard() {
     try {
       const res = await fetch(`${getAPIUrl()}/api/seed-db`, { 
         method: "POST",
-        headers: getAuthHeaders()
       });
       if (res.ok) {
         alert("Database reset and seeded successfully!");
@@ -497,15 +430,8 @@ export default function Dashboard() {
     });
     
     try {
-      const headers = getAuthHeaders();
-      if (!headers.Authorization) {
-        handleLogout("Please sign in as a Recruiter or Admin to ingest resumes.");
-        return;
-      }
-
       const res = await fetch(`${getAPIUrl()}/api/candidates/upload-batch?session_id=${sess}`, {
         method: "POST",
-        headers: headers,
         body: formData
       });
 
@@ -530,10 +456,6 @@ export default function Dashboard() {
           const errObj = JSON.parse(errorText);
           errDetail = errObj.detail || errDetail;
         } catch { /* not JSON */ }
-        if (res.status === 401) {
-          handleLogout(getAuthErrorMessage(errDetail));
-          return;
-        }
         setUploadError(formatApiError(errDetail, 120));
         setActiveUploadSession(null);
       }
@@ -561,7 +483,7 @@ export default function Dashboard() {
     e.preventDefault();
     e.stopPropagation();
     setDragActive(false);
-    const allowed = [".pdf", ".docx", ".txt"];
+    const allowed = [".pdf", ".docx", ".txt", ".json", ".jsonl"];
     const droppedFiles = Array.from(e.dataTransfer.files).filter(f => {
       const ext = "." + f.name.split(".").pop()?.toLowerCase();
       return allowed.includes(ext);
@@ -596,7 +518,6 @@ export default function Dashboard() {
         method: "POST",
         headers: { 
           "Content-Type": "application/json",
-          ...getAuthHeaders()
         },
         body: JSON.stringify({
           session_id: "demo-session-id",
@@ -626,7 +547,6 @@ export default function Dashboard() {
   };
 
   const handleFlushResumes = async () => {
-    if (role === "viewer") return;
     const total =
       rankingAnalytics?.total_processed ??
       candidates.length + disqualifiedCandidates.length;
@@ -644,7 +564,6 @@ export default function Dashboard() {
     try {
       const res = await fetch(`${getAPIUrl()}/api/candidates/flush`, {
         method: "DELETE",
-        headers: getAuthHeaders(),
       });
       if (res.ok) {
         const data = await res.json();
@@ -658,10 +577,6 @@ export default function Dashboard() {
         setFlushSuccess(data.message || "All resumes flushed from database.");
         await fetchSystemStatus();
       } else {
-        if (res.status === 401) {
-          handleLogout();
-          return;
-        }
         const errObj = await res.json().catch(() => ({ detail: "Failed to flush resumes." }));
         setRankingError(formatApiError(errObj.detail, 120));
       }
@@ -706,9 +621,7 @@ export default function Dashboard() {
     setIsDebating(true);
 
     try {
-      const res = await fetch(`${getAPIUrl()}/api/rank/${selectedJobId}/candidate/${cand.id}/decision`, {
-        headers: getAuthHeaders()
-      });
+      const res = await fetch(`${getAPIUrl()}/api/rank/${selectedJobId}/candidate/${cand.id}/decision`);
       if (res.ok) {
         const data = await res.json();
         setDebateHistory(data.debate);
@@ -745,7 +658,7 @@ export default function Dashboard() {
   // Build Team Gap visualization details
   const getTeamGapData = (cand: any) => {
     if (!cand) return [];
-    const jobSelected = jobs.find(j => j.id === selectedJobId) || jobs[0];
+    const jobSelected = jobs.find(j => j.id === selectedJobId);
     if (!jobSelected) return [];
     const reqSkills = jobSelected.graph_schema?.skills_required || [];
 
@@ -762,97 +675,11 @@ export default function Dashboard() {
     });
   };
 
-  const activeJob = jobs.find(j => j.id === selectedJobId) || jobs[0] || { id: null, title: "No Role Active", graph_schema: { skills_required: [] } };
+  const activeJob = jobs.find(j => j.id === selectedJobId) || { id: null, title: "No Role Active", graph_schema: { skills_required: [] } };
 
   const gapsIdentified = activeJob?.graph_schema?.skills_required?.filter(
     (s: string) => !teamSkills.map(ts => ts.toLowerCase()).includes(s.toLowerCase())
   ) || [];
-
-  // Return login screen if session is not authenticated
-  if (!token) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-[#09090c] text-slate-100 font-sans p-6">
-        <div className="w-full max-w-md bg-[#14141d]/80 backdrop-blur-md border border-[#242435] rounded-2xl p-8 space-y-6 shadow-2xl relative overflow-hidden">
-          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500"></div>
-          
-          <div className="text-center space-y-2">
-            <div className="bg-indigo-600/10 p-3 rounded-full text-indigo-400 inline-block">
-              <Cpu className="h-8 w-8" />
-            </div>
-            <h2 className="text-2xl font-bold text-white tracking-tight">Talent Rank AI Recruiter</h2>
-            <p className="text-xs text-slate-400">Complete Security Hardening Active</p>
-          </div>
-          
-          <form onSubmit={(e) => handleLogin(e)} className="space-y-4">
-            {loginError && (
-              <div className="bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl p-3 text-xs flex items-center gap-2">
-                <AlertCircle className="h-4 w-4 shrink-0" />
-                <span>{loginError}</span>
-              </div>
-            )}
-            
-            <div className="space-y-1">
-              <label className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Username</label>
-              <input
-                type="text"
-                value={loginUsername}
-                onChange={(e) => setLoginUsername(e.target.value)}
-                placeholder="Enter username"
-                className="w-full bg-[#0d0d16] border border-[#242435] focus:border-indigo-500 focus:outline-none px-4 py-2.5 rounded-xl text-xs text-slate-100"
-                required
-              />
-            </div>
-            
-            <div className="space-y-1">
-              <label className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Password</label>
-              <input
-                type="password"
-                value={loginPassword}
-                onChange={(e) => setLoginPassword(e.target.value)}
-                placeholder="••••••••"
-                className="w-full bg-[#0d0d16] border border-[#242435] focus:border-indigo-500 focus:outline-none px-4 py-2.5 rounded-xl text-xs text-slate-100"
-                required
-              />
-            </div>
-            
-            <button
-              type="submit"
-              disabled={loginLoading}
-              className="w-full bg-indigo-600 hover:bg-indigo-500 py-3 rounded-xl text-xs font-bold text-white transition-all active:scale-95 flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/10 disabled:opacity-50 mt-2"
-            >
-              {loginLoading ? (
-                <RefreshCw className="h-4 w-4 animate-spin" />
-              ) : "Authenticate Session"}
-            </button>
-          </form>
-          
-          <div className="border-t border-[#242435] pt-4 mt-4 space-y-3">
-            <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider text-center">Quick Developer Access</p>
-            <div className="grid grid-cols-3 gap-2">
-              <button
-                onClick={() => handleLogin(undefined, "admin", "admin123")}
-                className="bg-[#1b1b2a] hover:bg-indigo-600/20 border border-slate-700/60 py-2 rounded-xl text-[10px] font-semibold text-slate-200 transition-all active:scale-95 hover:border-indigo-500/50"
-              >
-                Admin
-              </button>
-              <button
-                onClick={() => handleLogin(undefined, "recruiter", "recruiter123")}
-                className="bg-[#1b1b2a] hover:bg-purple-600/20 border border-slate-700/60 py-2 rounded-xl text-[10px] font-semibold text-slate-200 transition-all active:scale-95 hover:border-purple-500/50"
-              >
-                Recruiter
-              </button>
-              <button
-                onClick={() => handleLogin(undefined, "viewer", "viewer123")}
-                className="bg-[#1b1b2a] hover:bg-emerald-600/20 border border-slate-700/60 py-2 rounded-xl text-[10px] font-semibold text-slate-200 transition-all active:scale-95 hover:border-emerald-500/50"
-              >
-                Viewer
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   // Return offline fallback interface if server cannot be reached
   if (systemStatus?.mode === "offline") {
@@ -904,99 +731,6 @@ export default function Dashboard() {
         </div>
 
         <div className="flex items-center gap-4">
-          {/* Infrastructure Resiliency Widget */}
-          {systemStatus && (
-            <div className="relative">
-              <button
-                onClick={() => setShowStatusPopover(!showStatusPopover)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all hover:bg-slate-800 ${
-                  systemStatus.mode === "fallback"
-                    ? "bg-amber-500/10 border-amber-500/30 text-amber-400"
-                    : "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
-                }`}
-              >
-                <span className={`h-2 w-2 rounded-full ${
-                  systemStatus.mode === "fallback" ? "bg-amber-400 animate-pulse" : "bg-emerald-400"
-                }`}></span>
-                System Status: {systemStatus.mode === "fallback" ? "Fallback" : "Live"}
-              </button>
-
-              {showStatusPopover && (
-                <div className="absolute right-0 mt-2 w-64 bg-[#11111b] border border-[#242435] rounded-xl p-4 shadow-2xl z-50 animate-fade-in text-xs space-y-2.5">
-                  <h4 className="font-bold text-white border-b border-[#242435] pb-1.5 flex items-center justify-between">
-                    <span>System Status</span>
-                    <span className={`text-[10px] px-1.5 py-0.2 rounded-full uppercase ${
-                      systemStatus.mode === "fallback" ? "bg-amber-500/20 text-amber-400" : "bg-emerald-500/20 text-emerald-400"
-                    }`}>
-                      {systemStatus.mode}
-                    </span>
-                  </h4>
-                  <div className="space-y-1.5">
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Database:</span>
-                      <span className="font-semibold text-white uppercase">{systemStatus.database}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Cache:</span>
-                      <span className="font-semibold text-white uppercase">{systemStatus.cache}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Vector:</span>
-                      <span className="font-semibold text-white uppercase">{systemStatus.vector}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">LLM:</span>
-                      <span className={`font-semibold uppercase ${systemStatus.llm === "connected" ? "text-indigo-400" : "text-rose-400"}`}>
-                        {systemStatus.llm === "connected" ? "Gemini" : "Unavailable"}
-                      </span>
-                    </div>
-                    <div className="flex justify-between border-t border-[#242435] pt-1.5 mt-1.5">
-                      <span className="text-slate-400">Mode:</span>
-                      <span className="font-bold text-white uppercase">{systemStatus.mode === "fallback" ? "Fallback" : "Live"}</span>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {jobs.length > 0 && (
-            <div className="flex items-center gap-2 bg-[#14141d] border border-[#242435] px-3 py-1.5 rounded-lg">
-              <Briefcase className="h-4 w-4 text-indigo-400" />
-              <span className="text-xs text-slate-400 font-semibold">Active Role:</span>
-              <select
-                className="bg-transparent text-sm text-slate-200 focus:outline-none cursor-pointer border-none p-0 font-medium"
-                value={selectedJobId || ""}
-                onChange={(e) => setSelectedJobId(Number(e.target.value))}
-              >
-                {jobs.map(j => (
-                  <option key={j.id} value={j.id} className="bg-[#14141d]">{j.title}</option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          {/* Authenticated User Session Profile */}
-          <div className="flex items-center gap-3 bg-[#14141d] border border-[#242435] px-3 py-1.5 rounded-lg text-xs">
-            <span className="h-2 w-2 rounded-full bg-indigo-500 animate-pulse"></span>
-            <span className="text-slate-400">User:</span>
-            <span className="font-semibold text-white">{username}</span>
-            <span className={`text-[10px] px-1.5 py-0.2 rounded-full uppercase font-bold border ${
-              role === 'admin' 
-                ? 'bg-rose-500/10 border-rose-500/20 text-rose-400' 
-                : role === 'recruiter' 
-                  ? 'bg-purple-500/10 border-purple-500/20 text-purple-400' 
-                  : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
-            }`}>
-              {role}
-            </span>
-            <button
-              onClick={() => handleLogout()}
-              className="text-slate-400 hover:text-rose-400 ml-2 font-semibold transition-colors"
-            >
-              Logout
-            </button>
-          </div>
 
           {role === "admin" && (
             <>
@@ -1053,8 +787,6 @@ export default function Dashboard() {
       {currentView === "admin" && (
         <div className="flex-1 overflow-y-auto">
           <JobManager
-            token={token}
-            role={role}
             getAPIUrl={getAPIUrl}
             onActiveJobChanged={(jobId: number) => setSelectedJobId(jobId)}
             selectedJobId={selectedJobId}
@@ -1066,7 +798,6 @@ export default function Dashboard() {
       {currentView === "ats" && (
         <div className="flex-1 overflow-y-auto p-6">
           <ATSBoard
-            token={token}
             selectedJobId={selectedJobId}
             candidates={candidates.map((c: any) => ({ id: c.id, name: c.name, email: c.email }))}
             getAPIUrl={getAPIUrl}
@@ -1156,176 +887,497 @@ export default function Dashboard() {
 
           {/* RESUME INGESTION UPLOADER */}
           <div className="bg-[#14141d] border border-[#242435] rounded-2xl p-5 flex flex-col shadow-md relative overflow-hidden min-w-0">
-            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-indigo-500 to-purple-500"></div>
+            <div className="absolute top-0 left-0 w-full h-1 bg-linear-to-r from-indigo-500 to-purple-500"></div>
             
             <h3 className="text-sm font-semibold flex items-center gap-2 mb-3 text-slate-200">
               <Upload className="h-4 w-4 text-indigo-400" /> Resume Ingestion
             </h3>
 
-            {role === "viewer" ? (
-              <div className="bg-[#1b1b2a]/40 border border-[#242435] rounded-xl p-4 flex flex-col items-center justify-center text-center text-slate-400 gap-2.5 py-6">
-                <div className="bg-slate-800/50 p-2 rounded-full text-slate-500">
-                  <X className="h-5 w-5" />
+            <form onSubmit={handleUploadCandidate} className="space-y-3 min-w-0">
+              {uploadSuccess && (
+                <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-xl p-3 text-xs flex items-start gap-2 animate-fade-in min-w-0">
+                  <CheckCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                  <span className="break-words min-w-0">{uploadSuccess}</span>
                 </div>
-                <div>
-                  <p className="text-xs font-bold text-slate-300">View-Only Access</p>
-                  <p className="text-[10px] text-slate-500 mt-1 max-w-[220px]">
-                    Your role (viewer) does not have privileges to ingest resumes. Log in as a Recruiter or Admin to upload candidate files.
-                  </p>
+              )}
+              {uploadError && (
+                <div className="bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl p-3 text-xs flex items-start gap-2 animate-fade-in min-w-0">
+                  <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                  <span className="break-words min-w-0 leading-relaxed">{uploadError}</span>
+                </div>
+              )}
+
+              {/* Batch Results Detail */}
+              {batchResults && batchResults.length > 0 && (
+                <div className="space-y-1.5 max-h-[140px] overflow-y-auto overflow-x-hidden pr-1 custom-scrollbar min-w-0">
+                  {batchResults.map((r: any, i: number) => (
+                    <div key={i} className={`rounded-lg border px-3 py-2 min-w-0 ${
+                      r.status === 'success'
+                        ? 'bg-emerald-500/5 border-emerald-500/15 text-emerald-400'
+                        : 'bg-rose-500/5 border-rose-500/15 text-rose-400'
+                    }`}>
+                      <div className="flex items-center gap-2 min-w-0">
+                        {r.status === 'success' ? (
+                          <CheckCircle className="h-3 w-3 shrink-0" />
+                        ) : (
+                          <AlertCircle className="h-3 w-3 shrink-0" />
+                        )}
+                        <span className="truncate font-medium text-[11px] min-w-0 flex-1">{r.filename}</span>
+                        {r.status === 'success' && (
+                          <span className="text-[10px] opacity-80 shrink-0 truncate max-w-[40%]">{r.name}</span>
+                        )}
+                      </div>
+                      {r.status !== 'success' && r.detail && (
+                        <p className="text-[10px] opacity-80 break-words leading-relaxed mt-1 pl-5 line-clamp-2">
+                          {formatApiError(r.detail, 120)}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Drag & Drop Zone */}
+              <div
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                className={`group relative border-2 border-dashed rounded-xl p-5 text-center cursor-pointer transition-all duration-300 ${
+                  dragActive
+                    ? 'border-indigo-400 bg-indigo-500/10 scale-[1.02] shadow-lg shadow-indigo-500/10'
+                    : 'border-[#242435] hover:border-indigo-500/50 bg-[#0d0d16]/30 hover:bg-[#0d0d16]/50'
+                }`}
+              >
+                <input
+                  type="file"
+                  id="resume-file-input"
+                  accept=".pdf,.docx,.txt"
+                  multiple
+                  onChange={(e) => {
+                    if (e.target.files && e.target.files.length > 0) {
+                      const newFiles = Array.from(e.target.files);
+                      setUploadFiles(prev => {
+                        const existingNames = new Set(prev.map(f => f.name));
+                        const filtered = newFiles.filter(f => !existingNames.has(f.name));
+                        return [...prev, ...filtered];
+                      });
+                      setUploadSuccess(null);
+                      setUploadError(null);
+                      setBatchResults(null);
+                      // Reset file input so same files can be re-selected
+                      e.target.value = '';
+                    }
+                  }}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                />
+                <div className="flex flex-col items-center gap-2.5 pointer-events-none">
+                  <div className={`p-3 rounded-xl transition-all duration-300 ${
+                    dragActive
+                      ? 'bg-indigo-500/20 text-indigo-300 scale-110'
+                      : 'bg-indigo-500/5 text-indigo-400 group-hover:bg-indigo-500/10'
+                  }`}>
+                    <Upload className="h-6 w-6" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold text-slate-300">
+                      {dragActive ? 'Drop resumes here...' : 'Drag & drop resumes here'}
+                    </p>
+                    <p className="text-[10px] text-slate-500 mt-0.5">
+                      or click to browse • PDF, DOCX, TXT • up to 5MB each • multiple files
+                    </p>
+                  </div>
                 </div>
               </div>
-            ) : (
-              <form onSubmit={handleUploadCandidate} className="space-y-3 min-w-0">
-                {uploadSuccess && (
-                  <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-xl p-3 text-xs flex items-start gap-2 animate-fade-in min-w-0">
-                    <CheckCircle className="h-4 w-4 shrink-0 mt-0.5" />
-                    <span className="break-words min-w-0">{uploadSuccess}</span>
-                  </div>
-                )}
-                {uploadError && (
-                  <div className="bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl p-3 text-xs flex items-start gap-2 animate-fade-in min-w-0">
-                    <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
-                    <span className="break-words min-w-0 leading-relaxed">{uploadError}</span>
-                  </div>
-                )}
 
-                {/* Batch Results Detail */}
-                {batchResults && batchResults.length > 0 && (
-                  <div className="space-y-1.5 max-h-[140px] overflow-y-auto overflow-x-hidden pr-1 custom-scrollbar min-w-0">
-                    {batchResults.map((r: any, i: number) => (
-                      <div key={i} className={`rounded-lg border px-3 py-2 min-w-0 ${
-                        r.status === 'success'
-                          ? 'bg-emerald-500/5 border-emerald-500/15 text-emerald-400'
-                          : 'bg-rose-500/5 border-rose-500/15 text-rose-400'
-                      }`}>
-                        <div className="flex items-center gap-2 min-w-0">
-                          {r.status === 'success' ? (
-                            <CheckCircle className="h-3 w-3 shrink-0" />
-                          ) : (
-                            <AlertCircle className="h-3 w-3 shrink-0" />
-                          )}
-                          <span className="truncate font-medium text-[11px] min-w-0 flex-1">{r.filename}</span>
-                          {r.status === 'success' && (
-                            <span className="text-[10px] opacity-80 shrink-0 truncate max-w-[40%]">{r.name}</span>
-                          )}
-                        </div>
-                        {r.status !== 'success' && r.detail && (
-                          <p className="text-[10px] opacity-80 break-words leading-relaxed mt-1 pl-5 line-clamp-2">
-                            {formatApiError(r.detail, 120)}
-                          </p>
-                        )}
+              {/* File List */}
+              {uploadFiles.length > 0 && (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
+                      {uploadFiles.length} file{uploadFiles.length > 1 ? 's' : ''} selected
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setUploadFiles([])}
+                      className="text-[10px] text-rose-400 hover:text-rose-300 transition-colors font-medium"
+                    >
+                      Clear all
+                    </button>
+                  </div>
+                  <div className="max-h-[130px] overflow-y-auto space-y-1 pr-1 custom-scrollbar">
+                    {uploadFiles.map((file, index) => (
+                      <div
+                        key={`${file.name}-${index}`}
+                        className="flex items-center gap-2 bg-[#1b1b2a]/60 border border-[#242435] rounded-lg px-3 py-1.5 group/file hover:border-indigo-500/30 transition-colors"
+                      >
+                        <FileText className="h-3.5 w-3.5 text-indigo-400 shrink-0" />
+                        <span className="text-[11px] text-slate-300 truncate flex-1 font-medium">
+                          {file.name}
+                        </span>
+                        <span className="text-[9px] text-slate-500 shrink-0">
+                          {(file.size / 1024).toFixed(0)}KB
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => removeFile(index)}
+                          className="p-0.5 rounded hover:bg-rose-500/20 text-slate-500 hover:text-rose-400 transition-all opacity-0 group-hover/file:opacity-100"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
                       </div>
                     ))}
                   </div>
-                )}
+                </div>
+              )}
 
-                {/* Drag & Drop Zone */}
+              {uploadFiles.length > 0 && (
+                <button
+                  type="submit"
+                  disabled={uploadLoading}
+                  className="w-full bg-indigo-600 hover:bg-indigo-500 py-2.5 rounded-xl text-xs font-bold text-white transition-all active:scale-95 flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/10 disabled:opacity-50 disabled:cursor-not-allowed disabled:animate-none"
+                >
+                  {uploadLoading ? (
+                    <><RefreshCw className="h-3.5 w-3.5 animate-spin" /> Processing {uploadFiles.length} resume{uploadFiles.length > 1 ? 's' : ''}...</>
+                  ) : (
+                    <><Upload className="h-3.5 w-3.5" /> Ingest & Parse {uploadFiles.length} Resume{uploadFiles.length > 1 ? 's' : ''}</>
+                  )}
+                </button>
+              )}
+            </form>
+          </div>
+
+          {/* COMPULSORY JOB DESCRIPTION SECTION */}
+          <div className="bg-[#14141d] border border-[#242435] rounded-2xl p-5 flex flex-col shadow-md relative overflow-hidden min-w-0">
+            <div className="absolute top-0 left-0 w-full h-1 bg-linear-to-r from-purple-500 to-pink-500"></div>
+
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold flex items-center gap-2 text-slate-200">
+                <Briefcase className="h-4 w-4 text-purple-400" /> Job Description
+                <span className="text-[9px] bg-rose-500/20 text-rose-400 font-bold px-2 py-0.5 rounded-full border border-rose-500/30 uppercase tracking-wider">Required</span>
+              </h3>
+              {jdSaved && (
+                <span className="text-[10px] text-emerald-400 font-semibold flex items-center gap-1 animate-fade-in">
+                  <CheckCircle className="h-3 w-3" /> Saved
+                </span>
+              )}
+            </div>
+
+            <p className="text-[10px] text-slate-500 mb-3 leading-relaxed">
+              Provide the job description to enable accurate candidate ranking. You can type/paste the description or upload a JD file.
+            </p>
+
+            {/* Input Mode Toggle */}
+            <div className="flex bg-[#0d0d16] rounded-lg p-0.5 border border-[#242435] mb-3 self-start">
+              <button
+                type="button"
+                onClick={() => { setJdInputMode("write"); setJdFile(null); }}
+                className={`px-3.5 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-wider transition-all ${
+                  jdInputMode === "write"
+                    ? "bg-purple-600/20 text-purple-300 shadow-sm border border-purple-500/30"
+                    : "text-slate-500 hover:text-slate-300 border border-transparent"
+                }`}
+              >
+                ✏️ Write / Paste
+              </button>
+              <button
+                type="button"
+                onClick={() => setJdInputMode("file")}
+                className={`px-3.5 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-wider transition-all ${
+                  jdInputMode === "file"
+                    ? "bg-purple-600/20 text-purple-300 shadow-sm border border-purple-500/30"
+                    : "text-slate-500 hover:text-slate-300 border border-transparent"
+                }`}
+              >
+                📄 Upload File
+              </button>
+            </div>
+
+            {jdError && (
+              <div className="bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl p-3 text-xs flex items-start gap-2 animate-fade-in mb-3 min-w-0">
+                <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                <span className="break-words min-w-0 leading-relaxed">{jdError}</span>
+              </div>
+            )}
+
+             {jdInputMode === "write" ? (
+              <div className="space-y-3">
+                <div className="relative">
+                  <textarea
+                    value={jdText}
+                    onChange={(e) => {
+                      setJdText(e.target.value);
+                      setJdSaved(false);
+                      if (e.target.value.trim()) setJdError(null);
+                    }}
+                    placeholder="Paste or type the full job description here...&#10;&#10;Example: We are looking for a Senior Full-Stack Engineer with 5+ years of experience in React, Node.js, and cloud infrastructure. The ideal candidate will have experience with microservices, CI/CD pipelines, and agile methodologies..."
+                    rows={6}
+                    className="w-full bg-[#0d0d16] border border-[#242435] focus:border-purple-500 focus:outline-none px-4 py-3 rounded-xl text-xs text-slate-100 resize-y min-h-[120px] max-h-[300px] placeholder:text-slate-600 leading-relaxed transition-colors"
+                  />
+                  {jdText.trim() && (
+                    <span className="absolute bottom-3 right-3 text-[9px] text-slate-500 font-mono">
+                      {jdText.trim().split(/\s+/).length} words
+                    </span>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  disabled={!jdText.trim() || jdSaving}
+                  onClick={async () => {
+                    if (!jdText.trim()) {
+                      setJdError("Please enter a job description.");
+                      return;
+                    }
+                    setJdSaving(true);
+                    setJdError(null);
+                    try {
+                      let url = `${getAPIUrl()}/api/jobs`;
+                      let method = "POST";
+                      const activeJobData = selectedJobId !== null ? jobs.find(j => j.id === selectedJobId) : null;
+                      
+                      if (selectedJobId !== null) {
+                        url = `${getAPIUrl()}/api/jobs/${selectedJobId}`;
+                        method = "PUT";
+                      }
+                      
+                      const res = await fetch(url, {
+                        method: method,
+                        headers: {
+                          "Content-Type": "application/json",
+                        },
+                        body: JSON.stringify({
+                          title: activeJobData?.title || "Role from Uploaded JD",
+                          description: jdText.trim(),
+                          benchmark_profile: activeJobData?.benchmark_profile || "GENERAL_ENGINEER",
+                          required_skills: null
+                        })
+                      });
+                      if (res.ok) {
+                        const savedJob = await res.json();
+                        setJdSaved(true);
+                        setJdError(null);
+                        setSelectedJobId(savedJob.id);
+                        fetchInitialData();
+                        fetchData();
+                      } else {
+                        const err = await res.json().catch(() => ({ detail: "Failed to save." }));
+                        setJdError(formatApiError(err.detail, 160));
+                      }
+                    } catch {
+                      setJdError("Could not reach server to save job description.");
+                    } finally {
+                      setJdSaving(false);
+                    }
+                  }}
+                  className="w-full bg-purple-600 hover:bg-purple-500 py-2.5 rounded-xl text-xs font-bold text-white transition-all active:scale-95 flex items-center justify-center gap-2 shadow-lg shadow-purple-600/10 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {jdSaving ? (
+                    <><RefreshCw className="h-3.5 w-3.5 animate-spin" /> Saving Job Description...</>
+                  ) : (
+                    <><Briefcase className="h-3.5 w-3.5" /> Save Job Description</>
+                  )}
+                </button>
+              </div>
+            ) : (
+              /* File Upload Mode */
+              <div className="space-y-3">
                 <div
-                  onDragOver={handleDragOver}
-                  onDragLeave={handleDragLeave}
-                  onDrop={handleDrop}
+                  onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setJdDragActive(true); }}
+                  onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setJdDragActive(false); }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setJdDragActive(false);
+                    const allowed = [".pdf", ".docx", ".txt"];
+                    const droppedFile = Array.from(e.dataTransfer.files).find(f => {
+                      const ext = "." + f.name.split(".").pop()?.toLowerCase();
+                      return allowed.includes(ext);
+                    });
+                    if (droppedFile) {
+                      setJdFile(droppedFile);
+                      setJdError(null);
+                      setJdSaved(false);
+                      // Read file content for text files
+                      if (droppedFile.name.endsWith(".txt")) {
+                        const reader = new FileReader();
+                        reader.onload = (ev) => {
+                          setJdText((ev.target?.result as string) || "");
+                        };
+                        reader.readAsText(droppedFile);
+                      }
+                    }
+                  }}
                   className={`group relative border-2 border-dashed rounded-xl p-5 text-center cursor-pointer transition-all duration-300 ${
-                    dragActive
-                      ? 'border-indigo-400 bg-indigo-500/10 scale-[1.02] shadow-lg shadow-indigo-500/10'
-                      : 'border-[#242435] hover:border-indigo-500/50 bg-[#0d0d16]/30 hover:bg-[#0d0d16]/50'
+                    jdDragActive
+                      ? 'border-purple-400 bg-purple-500/10 scale-[1.02] shadow-lg shadow-purple-500/10'
+                      : 'border-[#242435] hover:border-purple-500/50 bg-[#0d0d16]/30 hover:bg-[#0d0d16]/50'
                   }`}
                 >
                   <input
                     type="file"
-                    id="resume-file-input"
                     accept=".pdf,.docx,.txt"
-                    multiple
                     onChange={(e) => {
-                      if (e.target.files && e.target.files.length > 0) {
-                        const newFiles = Array.from(e.target.files);
-                        setUploadFiles(prev => {
-                          const existingNames = new Set(prev.map(f => f.name));
-                          const filtered = newFiles.filter(f => !existingNames.has(f.name));
-                          return [...prev, ...filtered];
-                        });
-                        setUploadSuccess(null);
-                        setUploadError(null);
-                        setBatchResults(null);
-                        // Reset file input so same files can be re-selected
-                        e.target.value = '';
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        setJdFile(file);
+                        setJdError(null);
+                        setJdSaved(false);
+                        if (file.name.endsWith(".txt")) {
+                          const reader = new FileReader();
+                          reader.onload = (ev) => {
+                            setJdText((ev.target?.result as string) || "");
+                          };
+                          reader.readAsText(file);
+                        }
                       }
+                      e.target.value = '';
                     }}
                     className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
                   />
                   <div className="flex flex-col items-center gap-2.5 pointer-events-none">
                     <div className={`p-3 rounded-xl transition-all duration-300 ${
-                      dragActive
-                        ? 'bg-indigo-500/20 text-indigo-300 scale-110'
-                        : 'bg-indigo-500/5 text-indigo-400 group-hover:bg-indigo-500/10'
+                      jdDragActive
+                        ? 'bg-purple-500/20 text-purple-300 scale-110'
+                        : 'bg-purple-500/5 text-purple-400 group-hover:bg-purple-500/10'
                     }`}>
-                      <Upload className="h-6 w-6" />
+                      <FileText className="h-6 w-6" />
                     </div>
                     <div>
                       <p className="text-xs font-semibold text-slate-300">
-                        {dragActive ? 'Drop resumes here...' : 'Drag & drop resumes here'}
+                        {jdDragActive ? 'Drop JD file here...' : 'Drag & drop a JD file here'}
                       </p>
                       <p className="text-[10px] text-slate-500 mt-0.5">
-                        or click to browse • PDF, DOCX, TXT • up to 5MB each • multiple files
+                        or click to browse • PDF, DOCX, TXT
                       </p>
                     </div>
                   </div>
                 </div>
 
-                {/* File List */}
-                {uploadFiles.length > 0 && (
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
-                        {uploadFiles.length} file{uploadFiles.length > 1 ? 's' : ''} selected
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => setUploadFiles([])}
-                        className="text-[10px] text-rose-400 hover:text-rose-300 transition-colors font-medium"
-                      >
-                        Clear all
-                      </button>
-                    </div>
-                    <div className="max-h-[130px] overflow-y-auto space-y-1 pr-1 custom-scrollbar">
-                      {uploadFiles.map((file, index) => (
-                        <div
-                          key={`${file.name}-${index}`}
-                          className="flex items-center gap-2 bg-[#1b1b2a]/60 border border-[#242435] rounded-lg px-3 py-1.5 group/file hover:border-indigo-500/30 transition-colors"
-                        >
-                          <FileText className="h-3.5 w-3.5 text-indigo-400 shrink-0" />
-                          <span className="text-[11px] text-slate-300 truncate flex-1 font-medium">
-                            {file.name}
-                          </span>
-                          <span className="text-[9px] text-slate-500 shrink-0">
-                            {(file.size / 1024).toFixed(0)}KB
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => removeFile(index)}
-                            className="p-0.5 rounded hover:bg-rose-500/20 text-slate-500 hover:text-rose-400 transition-all opacity-0 group-hover/file:opacity-100"
-                          >
-                            <X className="h-3 w-3" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
+                {/* Selected JD File Display */}
+                {jdFile && (
+                  <div className="flex items-center gap-2 bg-[#1b1b2a]/60 border border-purple-500/20 rounded-lg px-3 py-2 group/jdfile hover:border-purple-500/40 transition-colors">
+                    <FileText className="h-3.5 w-3.5 text-purple-400 shrink-0" />
+                    <span className="text-[11px] text-slate-300 truncate flex-1 font-medium">
+                      {jdFile.name}
+                    </span>
+                    <span className="text-[9px] text-slate-500 shrink-0">
+                      {(jdFile.size / 1024).toFixed(0)}KB
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => { setJdFile(null); setJdText(""); }}
+                      className="p-0.5 rounded hover:bg-rose-500/20 text-slate-500 hover:text-rose-400 transition-all"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
                   </div>
                 )}
 
-                {uploadFiles.length > 0 && (
+                {jdFile && (
                   <button
-                    type="submit"
-                    disabled={uploadLoading}
-                    className="w-full bg-indigo-600 hover:bg-indigo-500 py-2.5 rounded-xl text-xs font-bold text-white transition-all active:scale-95 flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/10 disabled:opacity-50 disabled:cursor-not-allowed disabled:animate-none"
+                    type="button"
+                    disabled={jdSaving}
+                    onClick={async () => {
+                      if (!jdFile) return;
+
+                      setJdSaving(true);
+                      setJdError(null);
+
+                      // Read file text content
+                      let fileText = "";
+                      try {
+                        if (jdFile.name.endsWith(".txt")) {
+                          fileText = await jdFile.text();
+                        } else {
+                          // For PDF/DOCX, upload to the backend to extract text
+                          const formData = new FormData();
+                          formData.append("file", jdFile);
+                          const res = await fetch(`${getAPIUrl()}/api/jobs/extract-text`, {
+                            method: "POST",
+                            body: formData
+                          });
+                          if (!res.ok) {
+                            const errData = await res.json().catch(() => ({}));
+                            throw new Error(errData.detail || "Failed to extract text from JD file.");
+                          }
+                          const data = await res.json();
+                          fileText = data.text;
+                        }
+                      } catch (err: any) {
+                        setJdError(err.message || "Failed to extract text from JD file.");
+                        setJdSaving(false);
+                        return;
+                      }
+
+                      if (!fileText.trim()) {
+                        setJdError("Could not extract text from the file. Please use Write/Paste mode instead.");
+                        setJdSaving(false);
+                        return;
+                      }
+
+                      setJdText(fileText);
+
+                      try {
+                        let url = `${getAPIUrl()}/api/jobs`;
+                        let method = "POST";
+                        const activeJobData = selectedJobId !== null ? jobs.find(j => j.id === selectedJobId) : null;
+                        
+                        if (selectedJobId !== null) {
+                          url = `${getAPIUrl()}/api/jobs/${selectedJobId}`;
+                          method = "PUT";
+                        }
+                        
+                        const res = await fetch(url, {
+                          method: method,
+                          headers: {
+                            "Content-Type": "application/json",
+                          },
+                          body: JSON.stringify({
+                            title: activeJobData?.title || "Role from Uploaded JD",
+                            description: fileText.trim(),
+                            benchmark_profile: activeJobData?.benchmark_profile || "GENERAL_ENGINEER",
+                            required_skills: null
+                          })
+                        });
+                        if (res.ok) {
+                          const savedJob = await res.json();
+                          setJdSaved(true);
+                          setJdError(null);
+                          setSelectedJobId(savedJob.id);
+                          fetchInitialData();
+                          fetchData();
+                        } else {
+                          const err = await res.json().catch(() => ({ detail: "Failed to save." }));
+                          setJdError(formatApiError(err.detail, 160));
+                        }
+                      } catch {
+                        setJdError("Could not reach server to save job description.");
+                      } finally {
+                        setJdSaving(false);
+                      }
+                    }}
+                    className="w-full bg-purple-600 hover:bg-purple-500 py-2.5 rounded-xl text-xs font-bold text-white transition-all active:scale-95 flex items-center justify-center gap-2 shadow-lg shadow-purple-600/10 disabled:opacity-40 disabled:cursor-not-allowed"
                   >
-                    {uploadLoading ? (
-                      <><RefreshCw className="h-3.5 w-3.5 animate-spin" /> Processing {uploadFiles.length} resume{uploadFiles.length > 1 ? 's' : ''}...</>
+                    {jdSaving ? (
+                      <><RefreshCw className="h-3.5 w-3.5 animate-spin" /> Processing & Saving...</>
                     ) : (
-                      <><Upload className="h-3.5 w-3.5" /> Ingest & Parse {uploadFiles.length} Resume{uploadFiles.length > 1 ? 's' : ''}</>
+                      <><Briefcase className="h-3.5 w-3.5" /> Save Job Description from File</>
                     )}
                   </button>
                 )}
-              </form>
+              </div>
+            )}
+
+            {/* Current JD Preview (when saved) */}
+            {jdText.trim() && jdSaved && (
+              <div className="mt-3 bg-[#0d0d16]/50 border border-[#242435] rounded-xl p-3">
+                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+                  <CheckCircle className="h-3 w-3 text-emerald-400" /> Active Job Description
+                </p>
+                <p className="text-[10px] text-slate-400 line-clamp-3 leading-relaxed">
+                  {jdText.trim().slice(0, 200)}{jdText.trim().length > 200 ? "..." : ""}
+                </p>
+              </div>
             )}
           </div>
 
@@ -1375,17 +1427,10 @@ export default function Dashboard() {
 
             {/* Chat Input */}
             <form onSubmit={submitCopilot} className="p-3 border-t border-[#242435] flex items-center gap-2 bg-[#0d0d16]">
-              <input
-                type="text"
-                value={copilotPrompt}
-                disabled={role === "viewer"}
-                onChange={(e) => setCopilotPrompt(e.target.value)}
-                placeholder={role === "viewer" ? "Requires Recruiter role to query Copilot" : "Ask Copilot (e.g. 'find candidates who learn fast')..."}
-                className="flex-1 bg-[#14141d] border border-[#242435] focus:border-indigo-500 focus:outline-none px-3.5 py-2 rounded-xl text-xs text-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
-              />
+        
               <button
                 type="submit"
-                disabled={role === "viewer" || copilotTyping}
+                disabled={false}
                 className="bg-indigo-600 hover:bg-indigo-500 p-2.5 rounded-xl text-white transition-all active:scale-95 flex items-center justify-center shadow disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <Send className="h-4 w-4" />
@@ -1468,7 +1513,6 @@ export default function Dashboard() {
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
-              {role !== "viewer" && (
                 <button
                   type="button"
                   onClick={handleFlushResumes}
@@ -1488,7 +1532,6 @@ export default function Dashboard() {
                     {isFlushingResumes ? "..." : "Flush"}
                   </span>
                 </button>
-              )}
 
               {isRanking && (
                 <span className="text-xs text-indigo-400 flex items-center gap-2 animate-pulse font-medium whitespace-nowrap">
@@ -1556,104 +1599,104 @@ export default function Dashboard() {
                   Trigger a database seed by clicking the &quot;Reset &amp; Seed Data&quot; button or add candidate records using the backend endpoint.
                 </p>
               </div>
-            ) : viewMode === "table" ? (
-              <CandidateTable 
-                candidates={candidates}
-                selectedCandidateId={selectedCandidate?.id}
-                onSelectCandidate={selectCandidateForDetail}
-              />
             ) : (
               <>
-              {candidates.map((cand) => {
-                const matchesBenchmark = cand.final_score > 0.85;
-                const matchesYC = cand.final_score > 0.90;
-                const hasGap = cand.modifiers.team_gap_score > 0.5;
-                const isOverridden = cand.status === "overridden";
+                {viewMode === "table" ? (
+                  <CandidateTable
+                    candidates={candidates}
+                    selectedCandidateId={selectedCandidate?.id}
+                    onSelectCandidate={selectCandidateForDetail}
+                  />
+                ) : (
+                  candidates.map((cand) => {
+                    const hasGap = (cand.modifiers?.team_gap_score ?? 0) > 0.5;
+                    const isOverridden = cand.status === "overridden";
 
-                return (
-                  <div
-                    key={cand.id}
-                    onClick={() => selectCandidateForDetail(cand)}
-                    className={`bg-[#1e1e2d]/60 border rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between cursor-pointer transition-all hover:bg-[#232338] group ${selectedCandidate?.id === cand.id ? 'border-indigo-500 shadow-md bg-[#232338]' : 'border-[#242435]'
-                      }`}
-                  >
-                    <div className="flex items-start gap-4">
-                      {/* Rank Circle */}
-                      <div className={`h-9 w-9 rounded-lg flex items-center justify-center font-bold text-sm shadow ${cand.rank === 1
-                        ? 'bg-indigo-600/20 text-indigo-400 border border-indigo-500/40'
-                        : cand.rank === 2
-                          ? 'bg-purple-600/20 text-purple-400 border border-purple-500/40'
-                          : 'bg-slate-700/20 text-slate-400 border border-slate-700/40'
-                        }`}>
-                        #{cand.rank}
-                      </div>
+                    return (
+                      <div
+                        key={cand.id}
+                        onClick={() => selectCandidateForDetail(cand)}
+                        className={`bg-[#1e1e2d]/60 border rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between cursor-pointer transition-all hover:bg-[#232338] group ${selectedCandidate?.id === cand.id ? 'border-indigo-500 shadow-md bg-[#232338]' : 'border-[#242435]'
+                          }`}
+                      >
+                        <div className="flex items-start gap-4">
+                          {/* Rank Circle */}
+                          <div className={`h-9 w-9 rounded-lg flex items-center justify-center font-bold text-sm shadow ${cand.rank === 1
+                            ? 'bg-indigo-600/20 text-indigo-400 border border-indigo-500/40'
+                            : cand.rank === 2
+                              ? 'bg-purple-600/20 text-purple-400 border border-purple-500/40'
+                              : 'bg-slate-700/20 text-slate-400 border border-slate-700/40'
+                            }`}>
+                            #{cand.rank}
+                          </div>
 
-                      <div className="space-y-1">
-                        <h4 className="font-bold text-sm text-slate-100 group-hover:text-indigo-300 transition-colors flex items-center gap-2">
-                          {cand.name}
-                          {isOverridden && (
-                            <span className="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">
-                              Manual Review
-                            </span>
-                          )}
-                        </h4>
-                        <p className="text-xs text-slate-400 flex items-center gap-1">
-                          <Code className="h-3.5 w-3.5 text-indigo-400" /> github: {cand.github_username}
-                        </p>
+                          <div className="space-y-1">
+                            <h4 className="font-bold text-sm text-slate-100 group-hover:text-indigo-300 transition-colors flex items-center gap-2">
+                              {cand.name}
+                              {isOverridden && (
+                                <span className="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                                  Manual Review
+                                </span>
+                              )}
+                            </h4>
+                            <p className="text-xs text-slate-400 flex items-center gap-1">
+                              <Code className="h-3.5 w-3.5 text-indigo-400" /> github: {cand.github_username}
+                            </p>
 
-                        {/* Skill tags */}
-                        <div className="flex flex-wrap gap-1 pt-1.5">
-                          {cand.skills.slice(0, 4).map((s: string, i: number) => (
-                            <span key={i} className="text-[10px] bg-slate-800 text-slate-300 border border-slate-700/30 px-2 py-0.5 rounded-full">
-                              {s}
-                            </span>
-                          ))}
-                          {cand.skills.length > 4 && (
-                            <span className="text-[10px] text-slate-400 font-semibold pl-1">+{cand.skills.length - 4} more</span>
-                          )}
+                            {/* Skill tags */}
+                            <div className="flex flex-wrap gap-1 pt-1.5">
+                              {(cand.skills ?? []).slice(0, 4).map((s: string, i: number) => (
+                                <span key={i} className="text-[10px] bg-slate-800 text-slate-300 border border-slate-700/30 px-2 py-0.5 rounded-full">
+                                  {s}
+                                </span>
+                              ))}
+                              {(cand.skills?.length ?? 0) > 4 && (
+                                <span className="text-[10px] text-slate-400 font-semibold pl-1">+{cand.skills.length - 4} more</span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-4 mt-3 md:mt-0 justify-between md:justify-end border-t md:border-t-0 border-[#242435] pt-3 md:pt-0">
+                          <div className="flex flex-wrap gap-1.5 md:justify-end">
+                            {cand.is_llm_verified && (
+                              <span className="text-[9px] bg-indigo-500/20 text-indigo-400 font-bold border border-indigo-500/30 px-2 py-0.5 rounded">
+                                LLM Reranked
+                              </span>
+                            )}
+                            {hasGap && (
+                              <span className="text-[9px] bg-emerald-500/20 text-emerald-400 font-bold border border-emerald-500/30 px-2 py-0.5 rounded">
+                                Gap Filler
+                              </span>
+                            )}
+                            {(cand.modifiers?.transferable_skills ?? 0) > 0.1 && (
+                              <span className="text-[9px] bg-purple-500/20 text-purple-400 font-bold border border-purple-500/30 px-2 py-0.5 rounded">
+                                Hidden Talent
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="text-right">
+                            <div className="text-xs text-slate-400 font-medium">Match Score</div>
+                            <div className="text-base font-extrabold text-indigo-400 flex items-center gap-1.5 justify-end">
+                              {Math.round(cand.final_score * 100)}%
+                              <ChevronRight className="h-4 w-4 text-slate-500 group-hover:text-indigo-400 transition-colors" />
+                            </div>
+                          </div>
                         </div>
                       </div>
-                    </div>
+                    );
+                  })
+                )}
 
-                    <div className="flex items-center gap-4 mt-3 md:mt-0 justify-between md:justify-end border-t md:border-t-0 border-[#242435] pt-3 md:pt-0">
-                      <div className="flex flex-wrap gap-1.5 md:justify-end">
-                        {cand.is_llm_verified && (
-                          <span className="text-[9px] bg-indigo-500/20 text-indigo-400 font-bold border border-indigo-500/30 px-2 py-0.5 rounded">
-                            LLM Reranked
-                          </span>
-                        )}
-                        {hasGap && (
-                          <span className="text-[9px] bg-emerald-500/20 text-emerald-400 font-bold border border-emerald-500/30 px-2 py-0.5 rounded">
-                            Gap Filler
-                          </span>
-                        )}
-                        {cand.modifiers.transferable_skills > 0.1 && (
-                          <span className="text-[9px] bg-purple-500/20 text-purple-400 font-bold border border-purple-500/30 px-2 py-0.5 rounded">
-                            Hidden Talent
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="text-right">
-                        <div className="text-xs text-slate-400 font-medium">Match Score</div>
-                        <div className="text-base font-extrabold text-indigo-400 flex items-center gap-1.5 justify-end">
-                          {Math.round(cand.final_score * 100)}%
-                          <ChevronRight className="h-4 w-4 text-slate-500 group-hover:text-indigo-400 transition-colors" />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-
-              <DisqualifiedCandidatesSection
-                candidates={disqualifiedCandidates}
-                analytics={rankingAnalytics}
-                onSelectCandidate={selectCandidateForDetail}
-                onMoveBackToReview={handleMoveBackToReview}
-                selectedCandidateId={selectedCandidate?.id}
-                overriddenIds={overriddenCandidateIds}
-              />
+                <DisqualifiedCandidatesSection
+                  candidates={disqualifiedCandidates}
+                  analytics={rankingAnalytics}
+                  onSelectCandidate={selectCandidateForDetail}
+                  onMoveBackToReview={handleMoveBackToReview}
+                  selectedCandidateId={selectedCandidate?.id}
+                  overriddenIds={overriddenCandidateIds}
+                />
               </>
             )}
           </div>

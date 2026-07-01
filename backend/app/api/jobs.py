@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.db.models import Job, User
@@ -13,13 +13,13 @@ router = APIRouter(prefix="/api/jobs", tags=["Jobs"])
 
 class JobCreate(BaseModel):
     title: str = Field(..., min_length=3, max_length=150)
-    description: str = Field(..., min_length=10, max_length=2000)
+    description: str = Field(..., min_length=10, max_length=50000)
     benchmark_profile: str = Field(default="GENERAL_ENGINEER", pattern="^(YC_FOUNDER|YC_FOUNDING_ENGINEER|FAANG_STAFF|DEV_OPS|GENERAL_ENGINEER|DEFAULT)$")
     required_skills: Optional[List[str]] = Field(default=None)
 
 class SuggestSkillsQuery(BaseModel):
     title: str = Field(..., min_length=3, max_length=150)
-    description: str = Field(..., min_length=10, max_length=2000)
+    description: str = Field(..., min_length=10, max_length=50000)
 
 @router.post("/suggest-skills")
 def suggest_skills_endpoint(
@@ -28,6 +28,49 @@ def suggest_skills_endpoint(
 ):
     skills = llm_service.suggest_skills(payload.title, payload.description)
     return {"skills": skills}
+
+@router.post("/extract-text")
+async def extract_job_description_text(
+    file: UploadFile = File(...),
+    _current_user: User = Depends(require_role("recruiter"))
+):
+    contents = await file.read()
+    filename = file.filename.lower()
+    text = ""
+    try:
+        if filename.endswith(".pdf"):
+            import pypdf
+            from io import BytesIO
+            reader = pypdf.PdfReader(BytesIO(contents))
+            text_list = []
+            for page in reader.pages:
+                t = page.extract_text()
+                if t:
+                    text_list.append(t)
+            text = "\n".join(text_list)
+        elif filename.endswith(".docx"):
+            import docx2txt
+            import tempfile
+            import os
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as temp_file:
+                temp_file.write(contents)
+                temp_file_path = temp_file.name
+            try:
+                text = docx2txt.process(temp_file_path)
+            finally:
+                try:
+                    os.remove(temp_file_path)
+                except Exception:
+                    pass
+        else:
+            text = contents.decode("utf-8", errors="ignore")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to extract text from file: {str(e)}")
+        
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="The file is empty or no text could be extracted.")
+        
+    return {"text": text}
 
 @router.get("")
 def get_jobs(
@@ -88,6 +131,7 @@ def create_job(
     return new_job
 
 from app.services.talent_rediscovery import talent_rediscovery_engine
+from app.services.ranking_engine import ranking_engine
 
 class JobStatusUpdate(BaseModel):
     status: str = Field(..., pattern="^(active|archived|closed)$")
@@ -120,6 +164,9 @@ def update_job(
     
     db.commit()
     db.refresh(job)
+
+    # Flush the cached LLM ranking explanations so candidates are re-scored against the new JD
+    ranking_engine.clear_job_cache(job.id)
 
     log_audit_event(
         db=db,

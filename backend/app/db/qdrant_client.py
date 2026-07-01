@@ -217,6 +217,27 @@ class QdrantManager:
         
         return self._local_index.search(query_vector, limit=limit)
 
+    def delete_candidates(self, candidate_ids: list[int]):
+        """Remove specific candidate embeddings from Qdrant and the local fallback index."""
+        if not candidate_ids:
+            return
+
+        for cid in candidate_ids:
+            self._local_index.id_to_vector.pop(cid, None)
+            self._local_index.id_to_payload.pop(cid, None)
+        self._local_index._faiss_index = None
+
+        if self._use_fallback:
+            return
+
+        try:
+            self.client.delete(
+                collection_name=self.collection_name,
+                points_selector=qmodels.PointIdsList(points=candidate_ids),
+            )
+        except Exception as e:
+            logger.error(f"Failed to delete candidates {candidate_ids} from Qdrant: {e}")
+
     def clear_all_candidates(self, vector_size: int = EMBEDDING_DIM):
         """Remove every candidate embedding from Qdrant and the local fallback index."""
         self._local_index = LocalVectorIndex()
