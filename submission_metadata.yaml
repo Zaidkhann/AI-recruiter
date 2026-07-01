@@ -26,12 +26,12 @@ github_repo: "https://github.com/Zaidkhann/AI-recruiter.git"
 # Required. Must be reachable. Private repos OK if you can grant organizer
 # access at Stage 3 (the email to add will be communicated then).
 
-sandbox_link: "https://huggingface.co/spaces/YOUR_USERNAME/redrob-ranker"
+sandbox_link: "https://github.com/Zaidkhann/AI-recruiter.git"
 # Required. A working hosted environment where the ranker can be run on a small
 # candidate sample. See Section 10.5 of submission_spec.md for acceptable
 # platforms (HuggingFace Spaces, Streamlit Cloud, Replit, Colab, Docker, Binder).
 
-reproduce_command: "python rank_candidates.py"
+reproduce_command: "python3 rank_candidates.py"
 # The single command that produces submission.csv from candidates.jsonl.
 # Should run end-to-end within 5 minutes on CPU with 16GB RAM and no network.
 
@@ -60,6 +60,7 @@ ai_tools_used:
   - "GitHub Copilot"  # e.g. for autocomplete
   - "ChatGPT"
   - "Antigravity"
+  - "Gemini API"
   # Other options: "ChatGPT", "Cursor", "Gemini", "Codeium", "Other", "None"
 
 ai_usage_summary: |
@@ -68,7 +69,7 @@ ai_usage_summary: |
      No candidate data was fed to any LLM."
   - "Used Antigravity to create frontend"
   - "Used ChatGPT to debug Python issues and Cursor for refactoring."
-  - "No AI tools used."
+  - "Gemini API LLM INVOKED in ai recruiter queries"
 
 # ============================================================================
 # Approach summary (optional but recommended)
