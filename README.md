@@ -309,7 +309,16 @@ cp .env.example .env
 ### Docker (Recommended)
 
 ```bash
-docker compose up --build
+docker compose pull
+docker compose up
+
+## Docker Images
+
+Backend:
+https://hub.docker.com/r/zaidkhann/ai-recruiter-backend
+
+Frontend:
+https://hub.docker.com/r/zaidkhann/ai-recruiter-frontend
 ```
 
 ### Run Locally
@@ -563,18 +572,20 @@ erDiagram
 
 ---
 ## Screenshots 📷
-![alt text](talentrank_1.png)
-![alt text](talentrank_2.png)
-![alt text](talentrank_3.png)
-![alt text](talentrank_4.png)
+![Dashboard](screenshots/talentrank_1.png)
+
+![Candidate Ranking](screenshots/talentrank_2.png)
+
+![ATS Board](screenshots/talentrank_3.png)
+
+![Analytics](screenshots/talentrank_4.png)
 
 
 
 ---
 
-## 🎥 Demo
+## 🎥 Demo Video
 
-> No demo video is included in this repository.
 
 ### link🔗: https://drive.google.com/file/d/1x7rOzjD4lnBdSHuUGOgT2bG2Qe5rd7LT/view?usp=drive_link
 
@@ -591,8 +602,16 @@ erDiagram
 | `db` | postgres:16 | 5432 | Primary relational store |
 | `qdrant` | qdrant/qdrant:latest | 6333 | Vector embeddings |
 | `redis` | redis:7 | 6379 | Cache + rate limiting |
-| `backend` | `./backend/Dockerfile` | 8000 | FastAPI API |
-| `frontend` | `./frontend/Dockerfile` | 3000 | Next.js UI |
+| `backend` | `zaidkhann/ai-recruiter-backend:latest` | 8000 | FastAPI API |
+| `frontend` | `zaidkhann/ai-recruiter-frontend:latest` | 3000 | Next.js UI |
+
+## Docker Images
+
+Backend:
+https://hub.docker.com/r/zaidkhann/ai-recruiter-backend
+
+Frontend:
+https://hub.docker.com/r/zaidkhann/ai-recruiter-frontend
 
 ### Volumes
 
@@ -650,6 +669,7 @@ For split deployment: run Postgres, Qdrant, and Redis as managed services; point
 | **Technical Depth** | Triple-store architecture (SQL + vector + cache) with graceful degradation at every layer |
 | **User Experience** | Single dashboard for ingestion, ranking, intelligence, ATS, and copilot — no context switching |
 | **Submission Ready** | `rank_candidates.py` ranks 100K+ JSONL candidates in seconds; CSV export built-in |
+|Direct command to create csv file : python3 rank_candidates.py |
 
 ---
 
@@ -683,6 +703,6 @@ No license file is included in this repository. Add one before public distributi
 
 ## 👨‍💻 Author
 
-Built as an AI Recruiter / Talent Intelligence hackathon project.
+Built as an AI Recruiter / Talent Rank hackathon project.
 
 For questions or demo requests, open a GitHub issue in this repository.
