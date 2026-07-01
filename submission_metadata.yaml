@@ -1,0 +1,111 @@
+# Redrob Hackathon — Submission Metadata 
+
+# ============================================================================
+# Team identity
+# ============================================================================
+team_name: "AI Freaks"  #
+
+primary_contact:
+  name: "Mohd Zaid Khan"
+  email: "mkzaid46@gmail.com"   
+  phone: "+91-7828144283"       
+
+team_members:
+  - name: "Mohd Zaid Khan"
+    email: "mkzaid46@gmail.com"
+    role: "ML Engineer/Backend engineer"          # Optional, e.g. "Team Lead", "Backend", "Data"
+  - name: "Mohd Uves Khan"
+    email: "uveskhanx@gmail.com"
+    role: "Frontend Engineer/UI-Ux Engineer"
+  # Add more members as needed; solo participants list just one member
+
+# ============================================================================
+# Code and reproducibility
+# ============================================================================
+github_repo: "https://github.com/Zaidkhann/AI-recruiter.git"
+# Required. Must be reachable. Private repos OK if you can grant organizer
+# access at Stage 3 (the email to add will be communicated then).
+
+sandbox_link: "https://huggingface.co/spaces/YOUR_USERNAME/redrob-ranker"
+# Required. A working hosted environment where the ranker can be run on a small
+# candidate sample. See Section 10.5 of submission_spec.md for acceptable
+# platforms (HuggingFace Spaces, Streamlit Cloud, Replit, Colab, Docker, Binder).
+
+reproduce_command: "python rank_candidates.py"
+# The single command that produces submission.csv from candidates.jsonl.
+# Should run end-to-end within 5 minutes on CPU with 16GB RAM and no network.
+
+# ============================================================================
+# Compute environment
+# ============================================================================
+compute:
+  platform: "HP Probook "                    # Or: "AWS EC2 c5.4xlarge", "Local Linux box", etc.
+  cpu_cores: 8                                  # Number of CPU cores used
+  ram_gb: 16                                    # Available RAM in GB
+  python_version: "3.12.3"                      # python --version
+  os: "Windows 11"                              # Or "Ubuntu 22.04 LTS", etc.
+  uses_gpu_for_inference: false                 # Must be false — see compute constraints
+  has_network_during_ranking: false             # Must be false — no API calls during ranking
+  pre_computation_required: false               # true if you pre-compute embeddings or train models offline
+  pre_computation_time_minutes: 2-2.5 mins              # Approximate, if applicable
+
+# ============================================================================
+# AI tools declaration
+# ============================================================================
+# Transparency only — declared use is NOT penalized. Be honest. Stage 5 interview
+# may verify these declarations against your code; declarations that contradict
+# your code or your interview are flagged.
+ai_tools_used:
+  - "Claude"        # e.g. for architecture discussion, code review
+  - "GitHub Copilot"  # e.g. for autocomplete
+  - "ChatGPT"
+  - "Antigravity"
+  # Other options: "ChatGPT", "Cursor", "Gemini", "Codeium", "Other", "None"
+
+ai_usage_summary: |
+  Briefly describe how AI tools were used. Examples:
+  - "Used Claude for code review and architectural discussion. Used Copilot for autocomplete.
+     No candidate data was fed to any LLM."
+  - "Used Antigravity to create frontend"
+  - "Used ChatGPT to debug Python issues and Cursor for refactoring."
+  - "No AI tools used."
+
+# ============================================================================
+# Approach summary (optional but recommended)
+# ============================================================================
+methodology_summary: |
+  '''We abandoned the traditional boolean keyword search in favor of a Multi-Stage Semantic Retrieval & 18-Factor Scoring Pipeline.  
+ 
+1. Retrieval (Semantic + Graph-Assisted)
+ 
+Retrieval Engine: We use Qdrant (with a NumPy fallback for resilience) to perform a K-Nearest Neighbors (KNN) semantic search across candidate embeddings.
+ 
+2. Scoring & Models Used (The 18-Factor Engine)
+
+Once the candidate pool is retrieved, we evaluate them across 18 independent signals using specialized engines:
+
+Skill Adjacency (NetworkX Graph): We don't use binary matching. We built a directed weighted graph in NetworkX where nodes are skills and edges are relationships (e.g., React → Vue = 0.80). We run Shortest Path Graph Traversal to calculate an adjacency score. Candidates get credit for knowing equivalent technologies.
+
+Behavioral Intelligence (Heuristics & Threshold Mapping): We fetch live GitHub data and run it through a custom Threshold Normalization Heuristic. We map raw data (commits, PRs, repo sizes) across 4 sigmoid-like thresholds (low/med/high/max) to generate 7 signals, including Engineering Maturity (measuring language sophistication tiers) and Startup Readiness (measuring rapid iteration speed).
+
+Career Trajectory & Success Potential (Time-Series Heuristics): We calculate the derivative of their career — Promotion Velocity (levels climbed per year) and Job Stability (average tenure).
+
+Market Intelligence: We use a static heuristic map of trending technologies (e.g., PyTorch=0.95, Rust=0.90) to calculate market alignment and Learning Velocity (skills acquired per year of experience).
+ 
+3. Combining Signals into a Final Ranking
+ Base Raw Score: The 18 factors (semantic fit, adjacency, behavioral score, trajectory, etc.) are combined using a weighted sum.
+Disqualification Gates: Before ranking, candidates must pass threshold gates (e.g., core semantic threshold, absolute lack of adjacent skills).
+
+The Result: A final score clamped between 0 and 100. We don't just output the number — the entire calculation, including factor contribution percentages and modifier impacts, is output as a Ranking Audit Trail JSON, ensuring the AI's decision is 100% transparent, auditable, and free of black-box bias.  
+
+'''
+
+# ============================================================================
+# Declarations
+# ============================================================================
+declarations:
+  read_submission_spec: true        # I have read submission_spec.md in full
+  code_is_original_work: true       # My code is my team's original work (using AI as a tool is fine)
+  no_collusion: true                # I have not coordinated my submission with other teams
+  honeypot_check_done: true        # OPTIONAL — set true if you explicitly checked for honeypots in your ranking
+  reproduction_tested: true         # I have tested that my reproduce_command runs end-to-end

@@ -18,7 +18,7 @@
 **Prerequisites:** Docker & Docker Compose, a [Google Gemini API key](https://ai.google.dev/)
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/Zaidkhann/AI-recruiter.git
 
 cd AI-recruiter
 
@@ -28,6 +28,12 @@ cp .env.example .env
 
 docker compose up --build
 ```
+---
+## A single command that produces the submission CSV from the candidates file 
+>>python3 rank_candidates.py
+
+----
+
 
 | Service    | URL                          |
 | ---------- | ---------------------------- |
@@ -286,7 +292,7 @@ AI-recruiter/
 ### Clone
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/Zaidkhann/AI-recruiter.git
 cd AI-recruiter
 ```
 
@@ -554,18 +560,13 @@ erDiagram
 | Heap-based batch ranking | `rank_candidates.py` processes JSONL with O(n log 100) top-k heap |
 
 ---
+## Screenshots 📷
+![alt text](talentrank_1.png)
+![alt text](talentrank_2.png)
+![alt text](talentrank_3.png)
+![alt text](talentrank_4.png)
 
-## 📸 Screenshots
 
-> Screenshots are not included in the repository. Run the app locally to capture:
-
-| View | Description |
-| ---- | ----------- |
-| `[Screenshot: Recruiter Dashboard]` | Resume upload, JD editor, ranked candidate cards |
-| `[Screenshot: Candidate Drawer]` | Multi-tab intelligence panel with score rings |
-| `[Screenshot: ATS Board]` | Kanban pipeline with stage counts |
-| `[Screenshot: Pipeline Visualizer]` | Real-time ingestion telemetry |
-| `[Screenshot: Weight Sliders]` | 18-factor ranking weight controls |
 
 ---
 
@@ -573,23 +574,9 @@ erDiagram
 
 > No demo video is included in this repository.
 
-**Suggested demo flow (~3 min):**
-
-1. Start stack with `docker compose up --build`
-2. Open http://localhost:3000
-3. Paste or upload a job description → save job
-4. Drag & drop 2–3 resumes → watch pipeline visualizer
-5. Click **Rank Candidates** → explore top match drawer
-6. Open **Committee Review** tab → view AI debate
-7. Switch to **ATS Tracker** → move candidate through stages
+### link🔗: https://drive.google.com/file/d/1x7rOzjD4lnBdSHuUGOgT2bG2Qe5rd7LT/view?usp=drive_link
 
 ---
-
-## 🌍 Live Demo
-
-> No hosted deployment URL is configured in this repository.
-
-To deploy: build Docker images, set environment variables on your host, expose ports 3000 (frontend) and 8000 (backend), and ensure Postgres/Qdrant/Redis are reachable.
 
 ---
 
