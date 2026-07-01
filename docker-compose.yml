@@ -42,12 +42,11 @@ services:
       retries: 5
 
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    image: 
+      zaidkhann/ai-recruiter-backend:latest
     container_name: ai_recruiter_backend
-    volumes:
-      - ./backend:/workspace
+    # volumes:
+    #   - ./backend:/workspace
     ports:
       - "8000:8000"
     environment:
@@ -66,13 +65,12 @@ services:
         condition: service_started
 
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
+    image: 
+      zaidkhann/ai-recruiter-frontend:latest
     container_name: ai_recruiter_frontend
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
+    # # volumes:
+    # #   - ./frontend:/app
+    #   - /app/node_modules
     ports:
       - "3000:3000"
     environment:

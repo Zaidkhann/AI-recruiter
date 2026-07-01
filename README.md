@@ -26,7 +26,9 @@ cp .env.example .env
 
 # Fill in the required environment variables
 
-docker compose up --build
+docker compose pull
+
+docker compose up
 ```
 ---
 ## A single command that produces the submission CSV from the candidates file 
